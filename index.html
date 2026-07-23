@@ -41,8 +41,9 @@
   #hero .state{font-size:12px; letter-spacing:.14em; text-transform:uppercase; font-weight:800}
   #hero.next .state{color:var(--watch)}
   #hero.go .state{color:var(--go)}
-  #hero .big{font-size:40px; font-weight:800; letter-spacing:-.02em; line-height:1.05; margin:8px 0 2px}
-  #hero .range{font-size:19px; font-weight:600; margin-top:2px}
+  #hero .big{font-size:46px; font-weight:800; letter-spacing:-.02em; line-height:1.05; margin:8px 0 2px}
+  #hero .range{font-size:16px; font-weight:600; margin-top:6px; color:var(--muted)}
+  .chip.pk{background:rgba(224,72,58,.16); color:var(--go); border:1px solid rgba(224,72,58,.4)}
   #hero .meta{color:var(--muted); font-size:14px; margin-top:10px}
   #hero .checkpoint{margin-top:12px; padding-top:12px; border-top:1px dashed var(--line); font-size:13px; color:var(--muted)}
   #hero .checkpoint b{color:var(--watch); font-weight:700}
@@ -54,7 +55,7 @@
   .win:first-of-type{border-top:none}
   .win .day{font-size:12px; font-weight:700; color:var(--muted)}
   .win .day .d2{display:block; font-size:20px; color:var(--text); font-weight:800; margin-top:1px}
-  .leg{display:flex; align-items:baseline; gap:8px; font-size:14px; padding:2px 0}
+  .leg{display:flex; align-items:baseline; flex-wrap:wrap; gap:8px; row-gap:2px; font-size:14px; padding:2px 0}
   .leg .dot{width:8px; height:8px; border-radius:50%; flex:0 0 8px; transform:translateY(1px)}
   .leg .t{font-weight:700; min-width:118px}
   .leg .n{color:var(--muted); font-size:12.5px}
@@ -103,9 +104,38 @@
   .gauge{display:flex; gap:18px; flex-wrap:wrap; align-items:baseline; margin-bottom:4px}
   .gauge .big{font-size:26px; font-weight:700; font-variant-numeric:tabular-nums}
   .gauge .vs{font-size:13px; color:#9fb4b8}
+  .nowline{font-size:13px; color:var(--muted); margin-bottom:10px}
+  .nowline b{color:var(--text); font-size:15px}
+  .strip{display:flex; align-items:flex-end; gap:1px; height:48px}
+  .strip i{flex:1 1 0; min-width:0; background:var(--go); border-radius:1px}
+  .ticks{display:flex; font-size:10px; color:var(--faint); margin-top:4px}
+  .peakrow{display:flex; align-items:center; flex-wrap:wrap; gap:9px; margin-top:9px; font-size:14px}
+  .peakrow .t{color:var(--go); font-weight:700}
+  .peakrow .pct{color:var(--muted); font-variant-numeric:tabular-nums}
+  .peakrow.top{background:rgba(224,72,58,.10); border:1px solid rgba(224,72,58,.32);
+    border-radius:10px; padding:8px 10px; margin-top:10px}
+  .peakrow.top .t{font-size:16px}
+  .peakrow.top .pct{color:var(--go); font-weight:700}
+  .peakrow .star{color:var(--go); font-size:12px}
   body{padding-top:env(safe-area-inset-top); padding-bottom:env(safe-area-inset-bottom)}
   footer{color:var(--faint); font-size:11.5px; margin:22px 2px; line-height:1.6}
   hr.soft{border:none; border-top:1px solid var(--line); margin:14px 0}
+  @media (max-width:430px){
+    body{padding-left:12px; padding-right:12px}
+    .card{padding:13px}
+    h1{font-size:23px}
+    #hero .big{font-size:40px}
+    #hero .range{font-size:17px}
+    .win{grid-template-columns:44px 1fr; gap:10px}
+    .win .day .d2{font-size:18px}
+    .leg{font-size:13.5px}
+    .leg .t{min-width:104px}
+    .leg .n{font-size:12px}
+    .strip{gap:0}
+    .yearrow{grid-template-columns:46px 1fr 84px; gap:6px}
+    .lagchip{padding:7px 11px; font-size:12.5px}
+    details .body, summary{padding-left:13px; padding-right:13px}
+  }
   @media (prefers-reduced-motion:reduce){.pulse{animation:none}}
 </style>
 </head>
@@ -146,6 +176,11 @@
 <section class="card" id="sonar">
   <p class="label">Run strength &middot; sonar at RM 19</p>
   <div id="sonarBody"><div class="note">Checking ADF&amp;G&hellip;</div></div>
+</section>
+
+<section class="card" id="best">
+  <p class="label">Best bets &middot; next 48 hrs</p>
+  <div id="bestBody"><div class="note">Building&hellip;</div></div>
 </section>
 
 <section class="card" id="river">
@@ -251,6 +286,7 @@ function buildWindows(){
   var avg=hs.length?hs.reduce(function(a,b){return a+b;},0)/hs.length:null;
   return HIGH_TIDES.map(function(x){var ht=x.t;return {
     ht:ht, htV:x.v, htBig:(avg!=null&&x.v!=null&&x.v>=avg+0.4),
+    peak:new Date(+ht+(lagLo+lagHi)/2*MS_H),
     sonarStart:new Date(+ht+lagLo*SONAR_FRAC*MS_H),
     sonarEnd:new Date(+ht+lagHi*SONAR_FRAC*MS_H),
     arrStart:new Date(+ht+lagLo*MS_H),
@@ -301,24 +337,114 @@ function renderHero(){
   var open=wins.filter(function(w){return w.arrStart<=now && now<=w.arrEnd;})[0];
   var next=wins.filter(function(w){return w.arrStart>now;})[0];
   function rangeStr(w){return clock(w.arrStart)+" \u2013 "+clock(w.arrEnd);}
-  if(open){
+
+  // The peak is the headline: where overlapping waves stack highest.
+  var cd=curveData();
+  var nowR=cd.nowR;
+  var pk=cd.peaks.slice();
+  if(!pk.length) pk=wins.map(function(w){return {t:+w.peak,r:null};})
+                       .filter(function(x){return x.t>+now-45*60000;});
+  var near=pk.filter(function(p){return Math.abs(p.t-now)<=45*60000;})[0];
+  var nextPk=pk.filter(function(p){return p.t>+now;})[0];
+  var show=near||nextPk;
+  if(!show){ renderTimeline(wins,open); renderBest(); return; }
+  var d=new Date(show.t);
+  // which tide drove it
+  var src=wins.slice().sort(function(a,b){return Math.abs(a.peak-show.t)-Math.abs(b.peak-show.t);})[0];
+  var strength=(show.r!=null)?'<span class="chip pk">'+Math.round(show.r*100)+'% strength</span>':"";
+  var mine=(d.getHours()>=S.prefLo&&d.getHours()<S.prefHi)?'<span class="chip fit">your hours</span>':"";
+
+  if(near){
     hero.className="card go";
-    document.getElementById("heroState").innerHTML='<span class="pulse">\u25cf</span> Fish arriving now';
-    document.getElementById("heroBig").textContent="Go";
-    document.getElementById("heroRange").innerHTML=dayName(open.arrStart)+" "+rangeStr(open)+(fitsPreferred(open)?'<span class="chip fit">your hours</span>':"");
-    document.getElementById("heroMeta").innerHTML='Window closes in <b id="cd" class="num"></b>. This wave rode the '+clock(open.ht)+' high tide at the mouth.';
-    document.getElementById("heroCheck").innerHTML="Next window: "+(next?dayName(next.arrStart)+" "+rangeStr(next):"\u2014");
-    heroCountdownTarget={el:"cd",time:open.arrEnd};
-  }else if(next){
+    document.getElementById("heroState").innerHTML='<span class="pulse">\u25cf</span> Peak arriving now';
+    document.getElementById("heroBig").textContent=clock(d);
+    document.getElementById("heroRange").innerHTML=strength+mine;
+    document.getElementById("heroMeta").innerHTML='This is the densest arrival of the wave. Rode the '+
+      clock(src.ht)+(src.htV!=null?" ("+src.htV.toFixed(1)+" ft)":"")+' high tide at the mouth.'+
+      (open?' Window runs to '+clock(open.arrEnd)+'.':"");
+    heroCountdownTarget=null;
+  }else{
     hero.className="card next";
-    document.getElementById("heroState").textContent="Next prime window";
-    document.getElementById("heroBig").innerHTML='in <span id="cd" class="num"></span>';
-    document.getElementById("heroRange").innerHTML=dayName(next.arrStart)+" "+rangeStr(next)+(fitsPreferred(next)?'<span class="chip fit">your hours</span>':"");
-    document.getElementById("heroMeta").innerHTML="Rode the "+clock(next.ht)+" high tide "+dayName(next.ht)+" at the mouth.";
-    document.getElementById("heroCheck").innerHTML='Confirm it: watch the <b>'+S.bank+' bank</b> count around '+clock(next.sonarStart)+"\u2013"+clock(next.sonarEnd)+" (fish crossing RM 19).";
-    heroCountdownTarget={el:"cd",time:next.arrStart};
+    document.getElementById("heroState").textContent="Next peak \u00b7 "+dayName(d);
+    document.getElementById("heroBig").textContent=clock(d);
+    document.getElementById("heroRange").innerHTML='in <span id="cd" class="num"></span> '+strength+mine;
+    document.getElementById("heroMeta").innerHTML='Right now you\u2019re at <b>'+Math.round(nowR*100)+
+      '%</b> of the best arrival in the next 48 hrs. This peak rode the '+clock(src.ht)+
+      (src.htV!=null?" ("+src.htV.toFixed(1)+" ft)":"")+' high tide at the mouth.';
+    heroCountdownTarget={el:"cd",time:d};
   }
+  document.getElementById("heroCheck").innerHTML='Confirm it: watch the <b>'+S.bank+' bank</b> count around '+
+    clock(src.sonarStart)+"\u2013"+clock(src.sonarEnd)+" (fish crossing RM 19).";
   renderTimeline(wins,open);
+  renderBest();
+}
+// Arrivals from one tide spread out as a bell, not a flat block. Overlapping
+// bells from consecutive tides are what create the real peaks and lulls.
+function lagCenter(){return (S.lagLo+S.lagHi)/2;}
+function lagSigma(){return Math.max(1.5,(S.lagHi-S.lagLo)/2.5);}
+function intensityAt(ms){
+  var c=lagCenter()*MS_H, sig=lagSigma();
+  return HIGH_TIDES.reduce(function(a,x){
+    var w=(x.v==null)?2.5:Math.max(0.2,x.v-12);
+    var dh=(ms-(+x.t+c))/MS_H;
+    return a+w*Math.exp(-dh*dh/(2*sig*sig));
+  },0);
+}
+function buildCurve(hours,stepMin){
+  var now=Date.now(),pts=[];
+  for(var m=0;m<hours*60;m+=stepMin){var t=now+m*60000;pts.push({t:t,i:intensityAt(t)});}
+  var mx=Math.max.apply(null,pts.map(function(p){return p.i;}))||1;
+  pts.forEach(function(p){p.r=p.i/mx;});
+  return pts;
+}
+var CURVE=null;
+function curveData(){
+  var fine=buildCurve(48,15);                 // 15-min resolution, one source of truth
+  var peaks=findPeaks(fine).sort(function(a,b){return a.t-b.t;});
+  CURVE={fine:fine,peaks:peaks,nowR:fine.length?fine[0].r:0};
+  return CURVE;
+}
+function findPeaks(pts){
+  var out=[];
+  for(var k=1;k<pts.length-1;k++)
+    if(pts[k].i>pts[k-1].i&&pts[k].i>=pts[k+1].i&&pts[k].r>0.3) out.push(pts[k]);
+  return out.sort(function(a,b){return b.i-a.i;});
+}
+function inMyHours(d){var h=d.getHours();return h>=S.prefLo&&h<S.prefHi;}
+function renderBest(){
+  var box=document.getElementById("bestBody"); if(!box)return;
+  if(!HIGH_TIDES.length){box.innerHTML='<div class="note">Waiting on tides\u2026</div>';return;}
+  var narrow=window.innerWidth<430;
+  var cd=CURVE||curveData();
+  var nowR=cd.nowR;
+  var every=narrow?4:2;                       // 60 or 30 min bars, same underlying curve
+  var pts=cd.fine.filter(function(_,i){return i%every===0;});
+  var peaks=cd.peaks.slice().sort(function(a,b){return b.r-a.r;}).slice(0,3)
+              .sort(function(a,b){return a.t-b.t;});
+  var bars=pts.map(function(p){
+    var h=Math.max(3,Math.round(p.r*46));
+    var op=(0.22+p.r*0.78).toFixed(2);
+    return '<i style="height:'+h+'px;opacity:'+op+'"></i>';
+  }).join("");
+  var ticks="";
+  for(var k=0;k<pts.length;k+=(narrow?6:12)){
+    var d=new Date(pts[k].t);
+    ticks+='<span style="flex:12">'+(d.getHours()%12||12)+(d.getHours()<12?"a":"p")+'</span>';
+  }
+  box.innerHTML=
+    '<div class="nowline">Right now: <b>'+Math.round(nowR*100)+'%</b> of the best arrival in the next 48 hrs</div>'+
+    '<div class="strip">'+bars+'</div>'+
+    '<div class="ticks">'+ticks+'</div>'+
+    peaks.map(function(p){
+      var d=new Date(p.t);
+      var top=(p.r>=0.999);
+      return '<div class="peakrow'+(top?" top":"")+'">'+(top?'<span class="star">\u2605</span>':"")+
+        '<span class="t num">'+dayName(d)+" "+clock(d)+'</span>'+
+        '<span class="pct">'+Math.round(p.r*100)+'%</span>'+
+        (inMyHours(d)?'<span class="chip fit">your hours</span>':'<span class="n">outside your hours</span>')+
+        '</div>';
+    }).join("")+
+    '<div class="note" style="margin-top:10px">Peaks are where waves from several tides stack up. A 40% hour still catches fish, it just is not the push.</div>';
 }
 function sameDay(a,b){return a.getFullYear()===b.getFullYear()&&a.getMonth()===b.getMonth()&&a.getDate()===b.getDate();}
 function dtag(d,ref){
@@ -336,7 +462,7 @@ function renderTimeline(wins,open){
       '<div>'+
         '<div class="leg"><span class="dot tide"></span><span class="t num">'+clock(w.ht)+dtag(w.ht,w.arrStart)+'</span><span class="n">high tide, mouth'+(w.htV!=null?" \u00b7 "+w.htV.toFixed(1)+" ft":"")+'</span>'+(w.htBig?'<span class="chip big">big tide</span>':"")+'</div>'+
         '<div class="leg"><span class="dot watch"></span><span class="t num">'+rangeDays(w.sonarStart,w.sonarEnd,w.arrStart)+'</span><span class="n">crosses RM 19 sonar</span></div>'+
-        '<div class="leg arr"><span class="dot go"></span><span class="t num">'+rangeDays(w.arrStart,w.arrEnd,w.arrStart)+'</span>'+(fitsPreferred(w)?'<span class="chip fit">your hours</span>':'<span class="n">at your spot</span>')+(isOpen?'<span class="chip fit" style="background:rgba(224,72,58,.15);border-color:rgba(224,72,58,.4);color:var(--go)">now</span>':'')+'</div>'+
+        '<div class="leg arr"><span class="dot go"></span><span class="t num">peak '+clock(w.peak)+'</span>'+'<span class="n">window '+rangeDays(w.arrStart,w.arrEnd,w.arrStart)+'</span>'+(fitsPreferred(w)?'<span class="chip fit">your hours</span>':'')+(isOpen?'<span class="chip fit" style="background:rgba(224,72,58,.15);border-color:rgba(224,72,58,.4);color:var(--go)">now</span>':'')+'</div>'+
       '</div>';
     el.appendChild(div);
   });
@@ -590,6 +716,8 @@ document.getElementById("retryTide").onclick=loadTides;
 
 renderSpot(); renderSpotToggle(); renderWhy(); fillSettings(); renderChips();
 loadTides(); loadSonar(); loadRiver();
+var rzT;
+window.addEventListener("resize",function(){clearTimeout(rzT);rzT=setTimeout(renderBest,180);});
 setInterval(tick,1000);
 setInterval(function(){ if(HIGH_TIDES.length) renderHero(); },60000);
 </script>
