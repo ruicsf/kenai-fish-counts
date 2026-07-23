@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0d1a1e">
+<title>Kenai Run Timer</title>
+<meta name="description" content="Times the Kenai late-run sockeye push from tides, river flow, and sonar counts.">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Run Timer">
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=&apos;http://www.w3.org/2000/svg&apos; viewBox=&apos;0 0 64 64&apos;%3E%3Crect width=&apos;64&apos; height=&apos;64&apos; rx=&apos;14&apos; fill=&apos;%230d1a1e&apos;/%3E%3Cpath d=&apos;M8 40c8-6 16-6 24 0s16 6 24 0&apos; stroke=&apos;%2356c4b5&apos; stroke-width=&apos;4&apos; fill=&apos;none&apos; stroke-linecap=&apos;round&apos;/%3E%3Cpath d=&apos;M40 16c-9 0-16 5-20 10 4 5 11 10 20 10 6 0 11-2 14-5-3-3-8-5-14-5-4 0-7 1-9 2 2-3 6-5 9-5 6 0 11 2 14 5 0-5-6-12-14-12z&apos; fill=&apos;%23e0483a&apos;/%3E%3Ccircle cx=&apos;44&apos; cy=&apos;24&apos; r=&apos;1.8&apos; fill=&apos;%230d1a1e&apos;/%3E%3C/svg%3E">
+<style>
+  :root{
+    --bg:#0d1a1e; --surface:#14262c; --surface2:#1b333b; --line:#284b55;
+    --text:#e9f1ef; --muted:#93aeb0; --faint:#647f83;
+    --go:#e0483a; --go-deep:#b23227;
+    --tide:#56c4b5; --watch:#e6a94e;
+    --radius:14px; font-synthesis:none;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.5; -webkit-font-smoothing:antialiased;
+    padding:env(safe-area-inset-top) 16px calc(24px + env(safe-area-inset-bottom));
+    max-width:560px; margin:0 auto;
+  }
+  .num{font-variant-numeric:tabular-nums}
+  header{padding:22px 2px 10px}
+  .kicker{font-size:11px; letter-spacing:.22em; text-transform:uppercase; color:var(--tide); font-weight:700}
+  h1{font-size:26px; line-height:1.1; margin:4px 0 2px; letter-spacing:-.01em}
+  .sub{color:var(--muted); font-size:13px}
+  .card{background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); padding:16px; margin:14px 0}
+  .label{font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:var(--muted); font-weight:700; margin:0 0 6px}
+  #hero{position:relative; overflow:hidden}
+  #hero.go{border-color:var(--go); background:linear-gradient(160deg,#211417,#14262c 60%)}
+  #hero .state{font-size:12px; letter-spacing:.14em; text-transform:uppercase; font-weight:800}
+  #hero.next .state{color:var(--watch)}
+  #hero.go .state{color:var(--go)}
+  #hero .big{font-size:40px; font-weight:800; letter-spacing:-.02em; line-height:1.05; margin:8px 0 2px}
+  #hero .range{font-size:19px; font-weight:600; margin-top:2px}
+  #hero .meta{color:var(--muted); font-size:14px; margin-top:10px}
+  #hero .checkpoint{margin-top:12px; padding-top:12px; border-top:1px dashed var(--line); font-size:13px; color:var(--muted)}
+  #hero .checkpoint b{color:var(--watch); font-weight:700}
+  .chip{display:inline-block; font-size:11px; font-weight:700; letter-spacing:.04em; padding:3px 8px; border-radius:999px; margin-left:6px; vertical-align:middle}
+  .chip.fit{background:rgba(86,196,181,.14); color:var(--tide); border:1px solid rgba(86,196,181,.35)}
+  .pulse{animation:p 2.4s ease-in-out infinite}
+  @keyframes p{0%,100%{opacity:1}50%{opacity:.55}}
+  .win{display:grid; grid-template-columns:56px 1fr; gap:12px; padding:12px 0; border-top:1px solid var(--line)}
+  .win:first-of-type{border-top:none}
+  .win .day{font-size:12px; font-weight:700; color:var(--muted)}
+  .win .day .d2{display:block; font-size:20px; color:var(--text); font-weight:800; margin-top:1px}
+  .leg{display:flex; align-items:baseline; gap:8px; font-size:14px; padding:2px 0}
+  .leg .dot{width:8px; height:8px; border-radius:50%; flex:0 0 8px; transform:translateY(1px)}
+  .leg .t{font-weight:700; min-width:118px}
+  .leg .n{color:var(--muted); font-size:12.5px}
+  .dot.tide{background:var(--tide)} .dot.watch{background:var(--watch)} .dot.go{background:var(--go)}
+  .leg.arr .t{color:var(--go)}
+  .bignum{font-size:32px; font-weight:800; letter-spacing:-.01em}
+  .verdict{font-size:14px; margin-top:8px}
+  .yearrow{display:grid; grid-template-columns:52px 1fr 96px; align-items:center; gap:8px; font-size:13px; padding:4px 0}
+  .yearrow .yr{color:var(--muted); font-weight:700}
+  .bar{height:7px; border-radius:4px; background:var(--surface2); overflow:hidden}
+  .bar>span{display:block; height:100%; background:var(--tide); opacity:.65}
+  .yearrow.me .bar>span{background:var(--go); opacity:1}
+  .yearrow.me .yr{color:var(--text)}
+  .yearrow .v{text-align:right; color:var(--muted)}
+  .note{font-size:12.5px; color:var(--muted)}
+  input,select,button{font:inherit; color:inherit}
+  input[type=number],input[type=text],input[type=date],input[type=datetime-local],select{
+    width:100%; background:var(--surface2); border:1px solid var(--line); color:var(--text);
+    border-radius:10px; padding:9px 10px}
+  .field{margin:10px 0}
+  .field label{display:block; font-size:12px; color:var(--muted); margin-bottom:5px; font-weight:600}
+  .row{display:flex; gap:10px}
+  .row>*{flex:1}
+  button.primary{background:var(--go-deep); border:1px solid var(--go); border-radius:10px; padding:10px 14px; font-weight:700; cursor:pointer}
+  button.ghost{background:transparent; border:1px solid var(--line); border-radius:10px; padding:9px 12px; cursor:pointer; color:var(--muted)}
+  a{color:var(--tide)}
+  a.btnlink{display:inline-block; text-decoration:none; border:1px solid var(--line); border-radius:10px; padding:9px 12px; font-weight:600; margin-top:4px}
+  details{margin:14px 0; border:1px solid var(--line); border-radius:var(--radius); background:var(--surface); overflow:hidden}
+  summary{padding:14px 16px; cursor:pointer; font-weight:700; list-style:none; display:flex; justify-content:space-between; align-items:center}
+  summary::-webkit-details-marker{display:none}
+  summary::after{content:"+"; color:var(--muted); font-weight:700}
+  details[open] summary::after{content:"\2013"}
+  details .body{padding:0 16px 16px}
+  .toggle{display:flex; align-items:center; gap:10px; margin:10px 0}
+  .toggle input{width:auto}
+  .err{color:var(--watch); font-size:13px}
+  .dtag{font-size:11px; opacity:.5; margin-left:5px; font-weight:400}
+  .chip.big{background:rgba(86,196,181,.14); color:var(--tide); border:1px solid rgba(86,196,181,.35)}
+  .chips{display:flex; flex-wrap:wrap; gap:8px; margin-top:12px}
+  .lagchip{background:#16262b; border:1px solid #2a3f46; color:#cfe3e6; border-radius:999px;
+    padding:8px 13px; font-size:13px; cursor:pointer; font-family:inherit; line-height:1.2}
+  .lagchip small{display:block; font-size:11px; opacity:.6; margin-top:2px}
+  .lagchip.rec{border-color:var(--tide); color:var(--tide); background:rgba(86,196,181,.1)}
+  .lagchip.on{background:var(--go-deep); border-color:var(--go); color:#fff}
+  .lagchip.on small{opacity:.8}
+  .gauge{display:flex; gap:18px; flex-wrap:wrap; align-items:baseline; margin-bottom:4px}
+  .gauge .big{font-size:26px; font-weight:700; font-variant-numeric:tabular-nums}
+  .gauge .vs{font-size:13px; color:#9fb4b8}
+  body{padding-top:env(safe-area-inset-top); padding-bottom:env(safe-area-inset-bottom)}
+  footer{color:var(--faint); font-size:11.5px; margin:22px 2px; line-height:1.6}
+  hr.soft{border:none; border-top:1px solid var(--line); margin:14px 0}
+  @media (prefers-reduced-motion:reduce){.pulse{animation:none}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="kicker">Kenai River &middot; Late-run sockeye</div>
+  <h1>Run Timer</h1>
+  <div class="sub" id="spotline">Loading your spot&hellip;</div>
+  <div class="chips" id="spotToggle"></div>
+</header>
+
+<section class="card" id="hero">
+  <div class="state" id="heroState">Loading tides&hellip;</div>
+  <div class="big num" id="heroBig">&mdash;</div>
+  <div class="range num" id="heroRange"></div>
+  <div class="meta" id="heroMeta"></div>
+  <div class="checkpoint" id="heroCheck"></div>
+</section>
+
+<section class="card">
+  <p class="label">Upcoming windows at your spot</p>
+  <div id="timeline"><div class="note">Loading&hellip;</div></div>
+  <div id="tideFallback" style="display:none">
+    <hr class="soft">
+    <p class="err" id="tideErr">Couldn't reach NOAA tides.</p>
+    <div class="field">
+      <label>Enter a high tide at the Kenai mouth</label>
+      <input type="datetime-local" id="manualHT">
+    </div>
+    <div class="row">
+      <button class="primary" id="useHT">Use this tide</button>
+      <button class="ghost" id="retryTide">Retry NOAA</button>
+    </div>
+  </div>
+</section>
+
+<section class="card" id="sonar">
+  <p class="label">Run strength &middot; sonar at RM 19</p>
+  <div id="sonarBody"><div class="note">Checking ADF&amp;G&hellip;</div></div>
+</section>
+
+<section class="card" id="river">
+  <p class="label">River conditions &middot; pace setting</p>
+  <div id="riverBody"><div class="note">Checking USGS gauge&hellip;</div></div>
+  <div class="chips" id="lagChips"></div>
+  <p class="note" id="lagNow"></p>
+</section>
+
+<details>
+  <summary>How the timing works</summary>
+  <div class="body note" id="whyBody"></div>
+</details>
+
+<details id="settings">
+  <summary>Settings</summary>
+  <div class="body">
+    <div class="field">
+      <label>My spot (label)</label>
+      <input type="text" id="setSpot">
+    </div>
+    <div class="row">
+      <div class="field"><label>My bank</label>
+        <select id="setBank"><option value="Right">Right (North)</option><option value="Left">Left (South)</option></select>
+      </div>
+      <div class="field"><label>NOAA tide station</label>
+        <select id="setStation">
+          <option value="9455742">Kenai City Pier (9455742) &mdash; at the mouth</option>
+          <option value="9455760">Nikiski (9455760)</option>
+          <option value="9455920">Anchorage (9455920)</option>
+          <option value="9455500">Seldovia (9455500)</option>
+        </select>
+      </div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Travel lag, min (hrs)</label><input type="number" id="setLagLo" step="0.5" min="0"></div>
+      <div class="field"><label>Travel lag, max (hrs)</label><input type="number" id="setLagHi" step="0.5" min="0"></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Fish my hours from</label><input type="number" id="setPrefLo" min="0" max="23"></div>
+      <div class="field"><label>&hellip;to</label><input type="number" id="setPrefHi" min="0" max="23"></div>
+    </div>
+    <button class="primary" id="saveSettings">Save settings</button>
+    <p class="note" style="margin-top:10px">Lag is hours from high tide at the mouth to fish reaching your spot. Default 20&ndash;30 assumes fish make 1&ndash;1.5&nbsp;mph over ground across the 30.5&nbsp;miles. The RM&nbsp;19 sonar checkpoint scales with it automatically. Use the pace chips above for a starting point, then fine-tune here once you've calibrated against real fishing.</p>
+  </div>
+</details>
+
+<footer>
+  Tides: NOAA CO-OPS Kenai City Pier (predictions, MLLW) &middot; Counts: ADF&amp;G RM&nbsp;19 DIDSON sonar &middot; Historical baseline 2022&ndash;2025 baked in.
+  Times use your device clock &mdash; keep it on Alaska time. Estimates only, not for navigation.
+</footer>
+
+<script>
+"use strict";
+
+var HIST = {
+2025:[7312,7152,8233,12744,14263,15322,23075,29398,43876,45638,24756,30484,24964,23100,51443,108708,121741,118413,163792,212676,247783,177441,191691,159649,129762,170918,249944,175825,104694,129028,149772,195096,138734,115164,108821,108352,64587,75746,79234,49203,41336,52654,49936,35230,37225,29034,50151,32597,28567,20827],
+2024:[6366,5484,9630,13590,18120,32928,35551,56130,48342,34416,25675,21378,26940,18882,21360,30725,191328,154944,123186,69468,32229,24936,28009,92949,157434,102624,74358,67674,70914,53434,46566,48884,37498,33726,24139,22052,17847,27839,6858,11937],
+2023:[3960,3902,2598,3132,3887,3588,3084,4247,6791,8064,7950,4686,2838,5250,20616,54971,69111,46860,26100,29607,32110,17576,32124,51468,120363,195029,146970,132852,137844,74148,43109,33143,40623,44961,53525,51753,44304,44450,44620,50948,37540,37956,33768,24992,30018,40847,31276],
+2022:[5034,4212,5796,7314,7386,10341,12973,13884,13992,21424,20597,8094,9636,5556,5225,18780,45558,39697,74328,189420,155774,99324,79950,101376,54139,44166,56110,32859,24474,24594,16902,31619,36152,21493,26351,29960,19915,23752,21717,25924,21212,26198,26817,17310,6190,12872,11353]
+};
+var HIST_YEARS=[2025,2024,2023,2022];
+
+var DEFAULTS={
+  spot:"Above Funny River, N bank (~RM 30.5)",
+  bank:"Right", station:"9455742",
+  spots:[
+    {label:"North bank (~RM 30.5)", bank:"Right", lat:60.465083, lon:-150.601302},
+    {label:"South bank (~RM 31)",   bank:"Left",  lat:60.476138, lon:-150.594233}
+  ],
+  spotIdx:0,
+  lagLo:20, lagHi:30, prefLo:10, prefHi:19
+};
+var S=loadJSON("kenai_settings_v1",{})||{};
+S=Object.assign({},DEFAULTS,S); delete S.highWater;
+// One-time move off Nikiski: Kenai City Pier sits at the river mouth, which is
+// the reference point the lag is measured from. Pick Nikiski again if you want it.
+if(!S.stationV2){ if(S.station==="9455760")S.station="9455742"; S.stationV2=true; saveJSON("kenai_settings_v1",S); }
+if(!S.spots||S.spots.length<2){ S.spots=DEFAULTS.spots.slice(); S.spotIdx=0; saveJSON("kenai_settings_v1",S); }
+applySpot(S.spotIdx||0,true);
+
+function loadJSON(k,f){try{var v=localStorage.getItem(k);return v?JSON.parse(v):f;}catch(e){return f;}}
+function saveJSON(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
+
+var MS_H=3600*1000;
+function ymd(d){return d.getFullYear()+pad(d.getMonth()+1)+pad(d.getDate());}
+function pad(n){return String(n).padStart(2,"0");}
+function parseNoaa(t){return new Date(t.replace(" ","T"));}
+function jul1Index(d){var j=new Date(d.getFullYear(),6,1);return Math.floor((new Date(d.getFullYear(),d.getMonth(),d.getDate())-j)/86400000);}
+function clock(d){var h=d.getHours(),m=d.getMinutes(),ap=h<12?"AM":"PM";h=h%12||12;return h+":"+pad(m)+" "+ap;}
+function dayName(d){var n=new Date();var t=new Date(n.getFullYear(),n.getMonth(),n.getDate());var dd=new Date(d.getFullYear(),d.getMonth(),d.getDate());var diff=Math.round((dd-t)/86400000);if(diff===0)return"Today";if(diff===1)return"Tmrw";return["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][d.getDay()];}
+function fmtDur(ms){if(ms<0)ms=0;var tot=Math.floor(ms/1000);var h=Math.floor(tot/3600),m=Math.floor((tot%3600)/60);if(h>=1)return h+"h "+pad(m)+"m";var s=tot%60;return m+"m "+pad(s)+"s";}
+function commas(n){return Math.round(n).toLocaleString("en-US");}
+
+var HIGH_TIDES=[];
+// RM 19 sits 19 of the 30.5 miles up from the mouth, so the sonar crossing
+// is that fraction of whatever lag is in effect. Adjust lag, this follows.
+var SONAR_FRAC=19/30.5;
+function buildWindows(){
+  var lagLo=S.lagLo, lagHi=S.lagHi;
+  var now=new Date();
+  var hs=HIGH_TIDES.filter(function(x){return x.v!=null;}).map(function(x){return x.v;});
+  var avg=hs.length?hs.reduce(function(a,b){return a+b;},0)/hs.length:null;
+  return HIGH_TIDES.map(function(x){var ht=x.t;return {
+    ht:ht, htV:x.v, htBig:(avg!=null&&x.v!=null&&x.v>=avg+0.4),
+    sonarStart:new Date(+ht+lagLo*SONAR_FRAC*MS_H),
+    sonarEnd:new Date(+ht+lagHi*SONAR_FRAC*MS_H),
+    arrStart:new Date(+ht+lagLo*MS_H),
+    arrEnd:new Date(+ht+lagHi*MS_H)
+  };}).filter(function(w){return w.arrEnd>now;}).sort(function(a,b){return a.arrStart-b.arrStart;});
+}
+function fitsPreferred(w){
+  var days=[w.arrStart,w.arrEnd];
+  for(var i=0;i<days.length;i++){var base=days[i];
+    var ps=new Date(base.getFullYear(),base.getMonth(),base.getDate(),S.prefLo,0);
+    var pe=new Date(base.getFullYear(),base.getMonth(),base.getDate(),S.prefHi,0);
+    if(w.arrStart<pe && w.arrEnd>ps) return true;
+  }
+  return false;
+}
+
+function applySpot(i,quiet){
+  var sp=S.spots[i]; if(!sp)return;
+  S.spotIdx=i; S.spot=sp.label; S.bank=sp.bank;
+  saveJSON("kenai_settings_v1",S);
+  if(!quiet){ renderSpot(); renderSpotToggle(); fillSettings(); renderHero(); renderWhy(); refreshSonar(); }
+}
+function renderSpotToggle(){
+  var box=document.getElementById("spotToggle"); if(!box)return;
+  box.innerHTML=S.spots.map(function(sp,i){
+    return '<button class="lagchip'+(i===S.spotIdx?" on":"")+'" data-i="'+i+'">'+sp.label+
+      '<small>'+sp.bank+' bank count</small></button>';
+  }).join("");
+  Array.prototype.forEach.call(box.querySelectorAll(".lagchip"),function(b){
+    b.onclick=function(){ applySpot(+b.dataset.i,false); };
+  });
+}
+function renderSpot(){
+  document.getElementById("spotline").textContent=S.spot+" \u00b7 watch the "+S.bank+" bank count";
+}
+var heroCountdownTarget=null;
+function renderHero(){
+  var hero=document.getElementById("hero");
+  var wins=buildWindows();
+  var now=new Date();
+  if(!wins.length){
+    hero.className="card"; document.getElementById("heroState").textContent="No tide data";
+    document.getElementById("heroBig").textContent="\u2014";
+    document.getElementById("heroRange").textContent="";
+    document.getElementById("heroMeta").textContent="Load a high tide below to compute your windows.";
+    document.getElementById("heroCheck").textContent=""; heroCountdownTarget=null; return;
+  }
+  var open=wins.filter(function(w){return w.arrStart<=now && now<=w.arrEnd;})[0];
+  var next=wins.filter(function(w){return w.arrStart>now;})[0];
+  function rangeStr(w){return clock(w.arrStart)+" \u2013 "+clock(w.arrEnd);}
+  if(open){
+    hero.className="card go";
+    document.getElementById("heroState").innerHTML='<span class="pulse">\u25cf</span> Fish arriving now';
+    document.getElementById("heroBig").textContent="Go";
+    document.getElementById("heroRange").innerHTML=dayName(open.arrStart)+" "+rangeStr(open)+(fitsPreferred(open)?'<span class="chip fit">your hours</span>':"");
+    document.getElementById("heroMeta").innerHTML='Window closes in <b id="cd" class="num"></b>. This wave rode the '+clock(open.ht)+' high tide at the mouth.';
+    document.getElementById("heroCheck").innerHTML="Next window: "+(next?dayName(next.arrStart)+" "+rangeStr(next):"\u2014");
+    heroCountdownTarget={el:"cd",time:open.arrEnd};
+  }else if(next){
+    hero.className="card next";
+    document.getElementById("heroState").textContent="Next prime window";
+    document.getElementById("heroBig").innerHTML='in <span id="cd" class="num"></span>';
+    document.getElementById("heroRange").innerHTML=dayName(next.arrStart)+" "+rangeStr(next)+(fitsPreferred(next)?'<span class="chip fit">your hours</span>':"");
+    document.getElementById("heroMeta").innerHTML="Rode the "+clock(next.ht)+" high tide "+dayName(next.ht)+" at the mouth.";
+    document.getElementById("heroCheck").innerHTML='Confirm it: watch the <b>'+S.bank+' bank</b> count around '+clock(next.sonarStart)+"\u2013"+clock(next.sonarEnd)+" (fish crossing RM 19).";
+    heroCountdownTarget={el:"cd",time:next.arrStart};
+  }
+  renderTimeline(wins,open);
+}
+function sameDay(a,b){return a.getFullYear()===b.getFullYear()&&a.getMonth()===b.getMonth()&&a.getDate()===b.getDate();}
+function dtag(d,ref){
+  if(sameDay(d,ref))return"";
+  return '<span class="dtag">'+["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][d.getDay()]+" "+d.getDate()+"</span>";
+}
+function rangeDays(a,b,ref){return clock(a)+dtag(a,ref)+"\u2013"+clock(b)+dtag(b,ref);}
+function renderTimeline(wins,open){
+  var el=document.getElementById("timeline"); el.innerHTML="";
+  wins.slice(0,5).forEach(function(w){
+    var div=document.createElement("div"); div.className="win";
+    var isOpen=open&&w===open;
+    div.innerHTML=
+      '<div class="day">'+dayName(w.arrStart)+'<span class="d2 num">'+w.arrStart.getDate()+'</span></div>'+
+      '<div>'+
+        '<div class="leg"><span class="dot tide"></span><span class="t num">'+clock(w.ht)+dtag(w.ht,w.arrStart)+'</span><span class="n">high tide, mouth'+(w.htV!=null?" \u00b7 "+w.htV.toFixed(1)+" ft":"")+'</span>'+(w.htBig?'<span class="chip big">big tide</span>':"")+'</div>'+
+        '<div class="leg"><span class="dot watch"></span><span class="t num">'+rangeDays(w.sonarStart,w.sonarEnd,w.arrStart)+'</span><span class="n">crosses RM 19 sonar</span></div>'+
+        '<div class="leg arr"><span class="dot go"></span><span class="t num">'+rangeDays(w.arrStart,w.arrEnd,w.arrStart)+'</span>'+(fitsPreferred(w)?'<span class="chip fit">your hours</span>':'<span class="n">at your spot</span>')+(isOpen?'<span class="chip fit" style="background:rgba(224,72,58,.15);border-color:rgba(224,72,58,.4);color:var(--go)">now</span>':'')+'</div>'+
+      '</div>';
+    el.appendChild(div);
+  });
+}
+function tick(){
+  if(heroCountdownTarget){var e=document.getElementById(heroCountdownTarget.el);if(e)e.textContent=fmtDur(heroCountdownTarget.time-new Date());}
+}
+
+function tideURL(){
+  var now=new Date();
+  var b=new Date(+now-24*MS_H), e=new Date(+now+3*24*MS_H);
+  return "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=predictions&application=kenai-run-timer"+
+    "&datum=MLLW&station="+encodeURIComponent(S.station)+"&time_zone=lst_ldt&units=english&interval=hilo&format=json"+
+    "&begin_date="+ymd(b)+"&end_date="+ymd(e);
+}
+function loadTides(){
+  document.getElementById("tideFallback").style.display="none";
+  fetch(tideURL()).then(function(r){return r.json();}).then(function(j){
+    if(!j.predictions||!j.predictions.length) throw new Error(j.error?j.error.message:"No predictions");
+    HIGH_TIDES=j.predictions.filter(function(p){return p.type==="H";}).map(function(p){return {t:parseNoaa(p.t),v:parseFloat(p.v)};});
+    renderHero();
+  }).catch(function(err){
+    document.getElementById("tideFallback").style.display="block";
+    document.getElementById("tideErr").textContent="Couldn't reach NOAA tides ("+err.message+"). Enter a high tide by hand to compute windows offline.";
+    if(!HIGH_TIDES.length) renderHero();
+  });
+}
+
+// Paste your Cloudflare Worker URL here to make counts load automatically.
+// Leave "" to fall back to the manual entry box.
+var PROXY="";
+
+function adfgURL(y){
+  if(PROXY) return PROXY.replace(/\/$/,"")+"/?year="+y;
+  return "https://www.adfg.alaska.gov/sf/FishCounts/index.cfm?ADFG=export.JSON&countLocationID=40&speciesID=420&year="+y;
+}
+var ADFG_PAGE="https://www.adfg.alaska.gov/sf/FishCounts/index.cfm?ADFG=main.displayResults&COUNTLOCATIONID=40&SPECIESID=420&YEAR="+(new Date().getFullYear());
+
+function histCumOn(idx){var out={};HIST_YEARS.forEach(function(y){var a=HIST[y],s=0;for(var i=0;i<=idx&&i<a.length;i++)s+=a[i];out[y]=s;});return out;}
+function paceVerdict(cum2026,idx){
+  var h=histCumOn(idx);
+  var vals=HIST_YEARS.map(function(y){return h[y];});
+  var avg=vals.reduce(function(a,b){return a+b;},0)/vals.length;
+  var pct=avg>0?Math.round((cum2026/avg-1)*100):0;
+  var word;
+  if(Math.abs(pct)<8) word="right on the 2022\u20132025 pace";
+  else word=(cum2026>=avg?"ahead of":"behind")+" the 2022\u20132025 average by "+Math.abs(pct)+"%";
+  var d=new Date();
+  var peakNote=(d.getMonth()===6&&d.getDate()<23)
+    ? " The big push usually starts around Jul 23\u201328, so a low number now is normal."
+    : " Peak is typically Jul 23\u201328 and lasts 7\u201310 days.";
+  return {avg:avg,h:h,text:"You're "+word+"."+peakNote};
+}
+var LAST_SONAR=null;
+function refreshSonar(){ if(LAST_SONAR)renderSonar(LAST_SONAR.c,LAST_SONAR.d,LAST_SONAR.o,LAST_SONAR.l); }
+function renderSonar(cum2026,daily2026,dateObj,live){
+  LAST_SONAR={c:cum2026,d:daily2026,o:dateObj,l:live};
+  var idx=jul1Index(dateObj);
+  var v=paceVerdict(cum2026,idx);
+  var maxv=Math.max(cum2026,Math.max.apply(null,HIST_YEARS.map(function(y){return v.h[y];})))||1;
+  var rows='<div class="yearrow me"><span class="yr num">\u2019'+String(dateObj.getFullYear()).slice(2)+'</span><span class="bar"><span style="width:'+(cum2026/maxv*100)+'%"></span></span><span class="v num">'+commas(cum2026)+'</span></div>';
+  HIST_YEARS.forEach(function(y){rows+='<div class="yearrow"><span class="yr num">\u2019'+String(y).slice(2)+'</span><span class="bar"><span style="width:'+(v.h[y]/maxv*100)+'%"></span></span><span class="v num">'+commas(v.h[y])+'</span></div>';});
+  var dstr=(dateObj.getMonth()+1)+"/"+dateObj.getDate();
+  document.getElementById("sonarBody").innerHTML=
+    '<div class="bignum num">'+commas(cum2026)+'</div>'+
+    '<div class="note">cumulative through '+dstr+(daily2026!=null?' \u00b7 '+commas(daily2026)+' that day':'')+(live?' \u00b7 <span style="color:var(--tide)">live from ADF&G</span>':'')+'</div>'+
+    '<div class="verdict">'+v.text+'</div>'+
+    '<hr class="soft"><p class="label">Cumulative to '+dstr+', by year</p>'+rows+
+    '<hr class="soft">'+
+    '<div class="note">Timing tie-in: a jump in the <b style="color:var(--watch)">'+S.bank+' bank</b> daily count is the wave that reaches you ~'+Math.round(S.lagLo*(1-SONAR_FRAC))+'\u2013'+Math.round(S.lagHi*(1-SONAR_FRAC))+' hrs later.</div>'+
+    '<a class="btnlink" href="'+ADFG_PAGE+'" target="_blank" rel="noopener">Open ADF&G count page</a> '+
+    '<button class="ghost" id="editSonar">Edit by hand</button>';
+  var es=document.getElementById("editSonar"); if(es) es.onclick=showSonarForm;
+}
+function showSonarForm(){
+  var saved=loadJSON("kenai_sonar_v1",null);
+  var today=new Date();
+  var dval=saved&&saved.date?saved.date:(today.getFullYear()+"-"+pad(today.getMonth()+1)+"-"+pad(today.getDate()));
+  document.getElementById("sonarBody").innerHTML=
+    '<p class="note">Grab today\u2019s cumulative from the ADF&G page, then enter it here.</p>'+
+    '<div class="field"><label>Date</label><input type="date" id="snDate" value="'+dval+'"></div>'+
+    '<div class="row">'+
+      '<div class="field"><label>Cumulative (this year)</label><input type="number" id="snCum" inputmode="numeric" value="'+(saved?saved.cumulative:"")+'"></div>'+
+      '<div class="field"><label>That day (optional)</label><input type="number" id="snDay" inputmode="numeric" value="'+(saved&&saved.daily!=null?saved.daily:"")+'"></div>'+
+    '</div>'+
+    '<div class="row"><button class="primary" id="snSave">Save &amp; compare</button>'+
+    '<a class="btnlink" href="'+ADFG_PAGE+'" target="_blank" rel="noopener" style="text-align:center">Open ADF&G</a></div>';
+  document.getElementById("snSave").onclick=function(){
+    var cum=parseFloat(document.getElementById("snCum").value);
+    var day=document.getElementById("snDay").value;
+    var dstr=document.getElementById("snDate").value;
+    if(isNaN(cum)||!dstr){return;}
+    var rec={date:dstr,cumulative:cum,daily:day===""?null:parseFloat(day)};
+    saveJSON("kenai_sonar_v1",rec);
+    renderSonar(cum,rec.daily,new Date(dstr+"T12:00:00"),false);
+  };
+}
+function loadSonar(){
+  var yr=new Date().getFullYear();
+  fetch(adfgURL(yr)).then(function(r){return r.text();}).then(function(txt){
+    var j=JSON.parse(txt);
+    var rows=(j.DATA||[]).filter(function(r){return r[0]===yr;});
+    if(!rows.length) throw new Error("no rows yet");
+    var cum=0,lastDaily=null,lastDate=null;
+    rows.forEach(function(r){var d=new Date(r[1]);if(isNaN(d))return;cum+=(+r[2]||0);lastDaily=(+r[2]||0);lastDate=d;});
+    if(!lastDate) throw new Error("no dated rows");
+    renderSonar(cum,lastDaily,lastDate,true);
+  }).catch(function(){
+    var saved=loadJSON("kenai_sonar_v1",null);
+    if(saved){renderSonar(saved.cumulative,saved.daily,new Date(saved.date+"T12:00:00"),false);}
+    else showSonarForm();
+  });
+}
+
+function renderWhy(){
+  document.getElementById("whyBody").innerHTML=
+    "<p><b>1. The ocean push.</b> Sockeye enter the Kenai in waves on the high tide down at Cook Inlet.</p>"+
+    "<p><b>2. The counter.</b> ~"+Math.round(S.lagLo*SONAR_FRAC)+"\u2013"+Math.round(S.lagHi*SONAR_FRAC)+" hrs later they pass the RM 19 sonar. You\u2019re on the "+S.bank+" bank, so the "+S.bank+" bank count is your wave.</p>"+
+    "<p><b>3. Your spot.</b> Another ~"+Math.round(S.lagLo*(1-SONAR_FRAC))+"\u2013"+Math.round(S.lagHi*(1-SONAR_FRAC))+" hrs to reach you above the Funny River.</p>"+
+    "<p><b>Rule of thumb:</b> ~"+S.lagLo+"\u2013"+S.lagHi+" hrs from the mouth\u2019s high tide to your hook, i.e. about 1\u20131.5 mph over ground. High/fast water runs them slower and tighter to the bank.</p>"+
+    "<p class=\"note\">Windows are estimates. Run timing shifts year to year with tides, temps, and weather.</p>";
+}
+
+function fillSettings(){
+  setVal("setSpot",S.spot); setVal("setBank",S.bank); setVal("setStation",S.station);
+  setVal("setLagLo",S.lagLo); setVal("setLagHi",S.lagHi);
+  setVal("setPrefLo",S.prefLo); setVal("setPrefHi",S.prefHi);
+}
+function setVal(id,v){var e=document.getElementById(id);if(e)e.value=v;}
+document.getElementById("saveSettings").onclick=function(){
+  S.spot=document.getElementById("setSpot").value||DEFAULTS.spot;
+  S.bank=document.getElementById("setBank").value;
+  S.station=document.getElementById("setStation").value;
+  S.lagLo=parseFloat(document.getElementById("setLagLo").value)||DEFAULTS.lagLo;
+  S.lagHi=parseFloat(document.getElementById("setLagHi").value)||DEFAULTS.lagHi;
+  S.prefLo=parseInt(document.getElementById("setPrefLo").value,10); if(isNaN(S.prefLo))S.prefLo=DEFAULTS.prefLo;
+  S.prefHi=parseInt(document.getElementById("setPrefHi").value,10); if(isNaN(S.prefHi))S.prefHi=DEFAULTS.prefHi;
+  if(S.spots&&S.spots[S.spotIdx]){ S.spots[S.spotIdx].label=S.spot; S.spots[S.spotIdx].bank=S.bank; }
+  saveJSON("kenai_settings_v1",S);
+  renderSpot(); renderSpotToggle(); renderWhy(); renderChips(); loadTides();
+  document.getElementById("settings").open=false;
+};
+
+// ---- River conditions -> recommended pace ----
+// Presets are hours from mouth high tide to your spot over 30.5 river miles.
+var PRESETS=[
+  {key:"low",  label:"Low water",  lo:18, hi:27, hint:"1.1\u20131.7 mph"},
+  {key:"norm", label:"Normal",     lo:20, hi:30, hint:"1.0\u20131.5 mph"},
+  {key:"high", label:"High",       lo:23, hi:33, hint:"0.9\u20131.3 mph"},
+  {key:"vhigh",label:"Very high",  lo:26, hi:36, hint:"0.85\u20131.2 mph"}
+];
+var USGS_SITE="15266300";
+var USGS_PAGE="https://waterdata.usgs.gov/monitoring-location/USGS-"+USGS_SITE+"/";
+var RECOMMENDED=null;
+
+function parseRdb(txt){
+  var lines=txt.replace(/\r/g,"").split("\n").filter(function(l){return l&&l.charAt(0)!=="#";});
+  if(lines.length<3)return null;
+  var head=lines[0].split("\t"),rows=[];
+  for(var i=2;i<lines.length;i++){
+    var c=lines[i].split("\t"); if(c.length<head.length)continue;
+    var o={}; for(var j=0;j<head.length;j++)o[head[j]]=c[j];
+    rows.push(o);
+  }
+  return rows;
+}
+
+function classify(cfs,st){
+  if(cfs<st.p25)return PRESETS[0];
+  if(cfs<st.p75)return PRESETS[1];
+  if(cfs<st.p90)return PRESETS[2];
+  return PRESETS[3];
+}
+
+function loadRiver(){
+  var iv="https://waterservices.usgs.gov/nwis/iv/?format=json&sites="+USGS_SITE+
+         "&parameterCd=00060&period=P1D&siteStatus=all";
+  var stat="https://waterservices.usgs.gov/nwis/stat/?format=rdb&sites="+USGS_SITE+
+           "&statReportType=daily&statTypeCd=all&parameterCd=00060";
+  Promise.all([
+    fetch(iv).then(function(r){return r.json();}),
+    fetch(stat).then(function(r){return r.text();})
+  ]).then(function(res){
+    var vals=res[0].value.timeSeries[0].values[0].value;
+    var cfs=null;
+    for(var i=vals.length-1;i>=0;i--){
+      var v=parseFloat(vals[i].value);
+      if(!isNaN(v)&&v>-999){cfs=v;break;}
+    }
+    if(cfs===null)throw new Error("no current reading");
+    var rows=parseRdb(res[1]); if(!rows)throw new Error("no stats");
+    var d=new Date(),m=d.getMonth()+1,dy=d.getDate(),row=null;
+    for(var k=0;k<rows.length;k++){
+      if(parseInt(rows[k].month_nu,10)===m&&parseInt(rows[k].day_nu,10)===dy){row=rows[k];break;}
+    }
+    if(!row)throw new Error("no stats for today");
+    var st={p25:+row.p25_va,p50:+row.p50_va,p75:+row.p75_va,p90:+row.p90_va,yrs:row.count_nu};
+    RECOMMENDED=classify(cfs,st);
+    var pct=Math.round((cfs/st.p50-1)*100);
+    var vs=pct===0?"right at the median":(Math.abs(pct)+"% "+(pct>0?"above":"below")+" the median");
+    document.getElementById("riverBody").innerHTML=
+      '<div class="gauge"><span class="big">'+commas(cfs)+' <span style="font-size:14px;opacity:.6">cfs</span></span>'+
+      '<span class="vs">'+vs+' for '+d.toLocaleDateString([],{month:"short",day:"numeric"})+
+      ' ('+st.yrs+' yrs of record)</span></div>'+
+      '<div class="note">Typical range today is '+commas(st.p25)+'\u2013'+commas(st.p75)+
+      ' cfs. Recommended pace: <b style="color:var(--tide)">'+RECOMMENDED.label+'</b>, '+
+      RECOMMENDED.lo+'\u2013'+RECOMMENDED.hi+' hrs.</div>';
+    renderChips();
+  }).catch(function(err){
+    RECOMMENDED=null;
+    document.getElementById("riverBody").innerHTML=
+      '<p class="err">Couldn\'t reach the USGS gauge ('+err.message+'). Pick a pace by eye.</p>'+
+      '<div class="note">Check flow at <a href="'+USGS_PAGE+'" target="_blank" rel="noopener">USGS Soldotna</a>.</div>';
+    renderChips();
+  });
+}
+
+function renderChips(){
+  var html=PRESETS.map(function(p){
+    var on=(S.lagLo===p.lo&&S.lagHi===p.hi);
+    var rec=RECOMMENDED&&RECOMMENDED.key===p.key;
+    return '<button class="lagchip'+(on?" on":(rec?" rec":""))+'" data-k="'+p.key+'">'+
+      p.label+(rec&&!on?" \u2605":"")+'<small>'+p.lo+'\u2013'+p.hi+' hrs \u00b7 '+p.hint+'</small></button>';
+  }).join("");
+  var box=document.getElementById("lagChips");
+  box.innerHTML=html;
+  Array.prototype.forEach.call(box.querySelectorAll(".lagchip"),function(b){
+    b.onclick=function(){
+      var p=PRESETS.filter(function(x){return x.key===b.dataset.k;})[0];
+      S.lagLo=p.lo; S.lagHi=p.hi;
+      saveJSON("kenai_settings_v1",S);
+      fillSettings(); renderChips(); renderHero(); renderWhy();
+    };
+  });
+  document.getElementById("lagNow").innerHTML=
+    "In use: <b>"+S.lagLo+"\u2013"+S.lagHi+" hrs</b> to your spot ("+
+    (30.5/S.lagHi).toFixed(2)+"\u2013"+(30.5/S.lagLo).toFixed(2)+" mph over ground). "+
+    "Fine-tune in Settings once you've calibrated against real fishing.";
+}
+
+document.getElementById("useHT").onclick=function(){
+  var v=document.getElementById("manualHT").value; if(!v)return;
+  var d=new Date(v);
+  HIGH_TIDES=[{t:d,v:null}];
+  document.getElementById("tideErr").textContent=
+    "Using high tide "+d.toLocaleString([], {weekday:"short",month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})+
+    ". Pick another and tap again to change it.";
+  renderHero();
+};
+document.getElementById("retryTide").onclick=loadTides;
+
+renderSpot(); renderSpotToggle(); renderWhy(); fillSettings(); renderChips();
+loadTides(); loadSonar(); loadRiver();
+setInterval(tick,1000);
+setInterval(function(){ if(HIGH_TIDES.length) renderHero(); },60000);
+</script>
+</body>
+</html>
