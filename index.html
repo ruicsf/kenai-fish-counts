@@ -108,6 +108,9 @@
   .nowline b{color:var(--text); font-size:15px}
   .strip{display:flex; align-items:flex-end; gap:1px; height:48px}
   .strip i{flex:1 1 0; min-width:0; background:var(--go); border-radius:1px}
+  .strip i.db{box-shadow:-1px 0 0 var(--faint)}
+  .strip i.nowbar{box-shadow:-2px 0 0 var(--tide)}
+  .nowline .sub2{color:var(--faint); font-size:12px}
   .ticks{display:flex; font-size:10px; color:var(--faint); margin-top:4px}
   .peakrow{display:flex; align-items:center; flex-wrap:wrap; gap:9px; margin-top:9px; font-size:14px}
   .peakrow .t{color:var(--go); font-weight:700}
@@ -145,7 +148,6 @@
   <div class="kicker">Kenai River &middot; Late-run sockeye</div>
   <h1>Run Timer</h1>
   <div class="sub" id="spotline">Loading your spot&hellip;</div>
-  <div class="chips" id="spotToggle"></div>
 </header>
 
 <section class="card" id="hero">
@@ -203,9 +205,6 @@
       <input type="text" id="setSpot">
     </div>
     <div class="row">
-      <div class="field"><label>My bank</label>
-        <select id="setBank"><option value="Right">Right (North)</option><option value="Left">Left (South)</option></select>
-      </div>
       <div class="field"><label>NOAA tide station</label>
         <select id="setStation">
           <option value="9455742">Kenai City Pier (9455742) &mdash; at the mouth</option>
@@ -245,22 +244,15 @@ var HIST = {
 var HIST_YEARS=[2025,2024,2023,2022];
 
 var DEFAULTS={
-  spot:"Above Funny River, N bank (~RM 30.5)",
-  bank:"Right", station:"9455742",
-  spots:[
-    {label:"North bank (~RM 30.5)", bank:"Right", lat:60.465083, lon:-150.601302},
-    {label:"South bank (~RM 31)",   bank:"Left",  lat:60.476138, lon:-150.594233}
-  ],
-  spotIdx:0,
+  spot:"Above Funny River (~RM 30.5)",
+  station:"9455742",
   lagLo:20, lagHi:30, prefLo:10, prefHi:19
 };
 var S=loadJSON("kenai_settings_v1",{})||{};
-S=Object.assign({},DEFAULTS,S); delete S.highWater;
+S=Object.assign({},DEFAULTS,S); delete S.highWater; delete S.bank; delete S.spots; delete S.spotIdx;
 // One-time move off Nikiski: Kenai City Pier sits at the river mouth, which is
 // the reference point the lag is measured from. Pick Nikiski again if you want it.
 if(!S.stationV2){ if(S.station==="9455760")S.station="9455742"; S.stationV2=true; saveJSON("kenai_settings_v1",S); }
-if(!S.spots||S.spots.length<2){ S.spots=DEFAULTS.spots.slice(); S.spotIdx=0; saveJSON("kenai_settings_v1",S); }
-applySpot(S.spotIdx||0,true);
 
 function loadJSON(k,f){try{var v=localStorage.getItem(k);return v?JSON.parse(v):f;}catch(e){return f;}}
 function saveJSON(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
@@ -303,24 +295,8 @@ function fitsPreferred(w){
   return false;
 }
 
-function applySpot(i,quiet){
-  var sp=S.spots[i]; if(!sp)return;
-  S.spotIdx=i; S.spot=sp.label; S.bank=sp.bank;
-  saveJSON("kenai_settings_v1",S);
-  if(!quiet){ renderSpot(); renderSpotToggle(); fillSettings(); renderHero(); renderWhy(); refreshSonar(); }
-}
-function renderSpotToggle(){
-  var box=document.getElementById("spotToggle"); if(!box)return;
-  box.innerHTML=S.spots.map(function(sp,i){
-    return '<button class="lagchip'+(i===S.spotIdx?" on":"")+'" data-i="'+i+'">'+sp.label+
-      '<small>'+sp.bank+' bank count</small></button>';
-  }).join("");
-  Array.prototype.forEach.call(box.querySelectorAll(".lagchip"),function(b){
-    b.onclick=function(){ applySpot(+b.dataset.i,false); };
-  });
-}
 function renderSpot(){
-  document.getElementById("spotline").textContent=S.spot+" \u00b7 watch the "+S.bank+" bank count";
+  document.getElementById("spotline").textContent=S.spot+" \u00b7 RM 19 sonar, 30.5 mi upstream";
 }
 var heroCountdownTarget=null;
 function renderHero(){
@@ -351,7 +327,9 @@ function renderHero(){
   var d=new Date(show.t);
   // which tide drove it
   var src=wins.slice().sort(function(a,b){return Math.abs(a.peak-show.t)-Math.abs(b.peak-show.t);})[0];
-  var strength=(show.r!=null)?'<span class="chip pk">'+Math.round(show.r*100)+'% strength</span>':"";
+  var fsH=fishScale();
+  var strength=(show.r==null)?"":
+    '<span class="chip pk">'+(fsH?"~"+fishFmt(fsH.perHrAt(show.r))+" fish/hr":Math.round(show.r*100)+"% on tide timing")+'</span>';
   var mine=(d.getHours()>=S.prefLo&&d.getHours()<S.prefHi)?'<span class="chip fit">your hours</span>':"";
 
   if(near){
@@ -373,7 +351,7 @@ function renderHero(){
       (src.htV!=null?" ("+src.htV.toFixed(1)+" ft)":"")+' high tide at the mouth.';
     heroCountdownTarget={el:"cd",time:d};
   }
-  document.getElementById("heroCheck").innerHTML='Confirm it: watch the <b>'+S.bank+' bank</b> count around '+
+  document.getElementById("heroCheck").innerHTML='Confirm it: the <b>RM 19 sonar</b> count should climb around '+
     clock(src.sonarStart)+"\u2013"+clock(src.sonarEnd)+" (fish crossing RM 19).";
   renderTimeline(wins,open);
   renderBest();
@@ -411,6 +389,21 @@ function findPeaks(pts){
   return out.sort(function(a,b){return b.i-a.i;});
 }
 function inMyHours(d){var h=d.getHours();return h>=S.prefLo&&h<S.prefHi;}
+// Curve gives the SHAPE of arrivals; the sonar daily count gives the SCALE.
+// mean(r) over the window represents an average hour, so D/24 fish land there.
+function fishScale(){
+  if(!LAST_SONAR||LAST_SONAR.d==null||!(LAST_SONAR.d>0))return null;
+  var cd=CURVE||curveData(); if(!cd.fine.length)return null;
+  var mean=cd.fine.reduce(function(a,p){return a+p.r;},0)/cd.fine.length;
+  if(!(mean>0))return null;
+  return {perHrAt:function(r){return LAST_SONAR.d/24*(r/mean);},
+          daily:LAST_SONAR.d, date:LAST_SONAR.o, live:LAST_SONAR.l};
+}
+function fishFmt(n){
+  if(n>=10000)return commas(Math.round(n/100)*100);
+  if(n>=1000)return commas(Math.round(n/10)*10);
+  return commas(n);
+}
 function renderBest(){
   var box=document.getElementById("bestBody"); if(!box)return;
   if(!HIGH_TIDES.length){box.innerHTML='<div class="note">Waiting on tides\u2026</div>';return;}
@@ -419,20 +412,30 @@ function renderBest(){
   var nowR=cd.nowR;
   var every=narrow?4:2;                       // 60 or 30 min bars, same underlying curve
   var pts=cd.fine.filter(function(_,i){return i%every===0;});
+  var fs=fishScale();
   var peaks=cd.peaks.slice().sort(function(a,b){return b.r-a.r;}).slice(0,3)
               .sort(function(a,b){return a.t-b.t;});
-  var bars=pts.map(function(p){
+  var bars=pts.map(function(p,i){
+    var d=new Date(p.t);
     var h=Math.max(3,Math.round(p.r*46));
     var op=(0.22+p.r*0.78).toFixed(2);
-    return '<i style="height:'+h+'px;opacity:'+op+'"></i>';
+    var prev=i?new Date(pts[i-1].t):null;
+    var mid=(prev&&d.getDate()!==prev.getDate())?" db":"";   // midnight divider
+    return '<i class="'+(i===0?"nowbar":"")+mid+'" style="height:'+h+'px;opacity:'+op+'"></i>';
   }).join("");
   var ticks="";
   for(var k=0;k<pts.length;k+=(narrow?6:12)){
     var d=new Date(pts[k].t);
-    ticks+='<span style="flex:12">'+(d.getHours()%12||12)+(d.getHours()<12?"a":"p")+'</span>';
+    var hr=(d.getHours()%12||12)+(d.getHours()<12?"a":"p");
+    ticks+='<span style="flex:12">'+(k===0?"now":(d.getHours()<6?dayName(d).slice(0,3)+" "+hr:hr))+'</span>';
   }
   box.innerHTML=
-    '<div class="nowline">Right now: <b>'+Math.round(nowR*100)+'%</b> of the best arrival in the next 48 hrs</div>'+
+    (fs
+      ? '<div class="nowline">Right now: <b>~'+fishFmt(fs.perHrAt(nowR))+' fish/hr</b> reaching your spot'+
+        '<span class="sub2"> \u00b7 '+commas(fs.daily)+'/day at the sonar on '+
+        (fs.date.getMonth()+1)+'/'+fs.date.getDate()+', spread by tide timing</span></div>'
+      : '<div class="nowline">Right now: <b>'+Math.round(nowR*100)+'%</b> on tide timing'+
+        '<span class="sub2"> \u00b7 add today\u2019s daily count below to see fish/hr</span></div>')+
     '<div class="strip">'+bars+'</div>'+
     '<div class="ticks">'+ticks+'</div>'+
     peaks.map(function(p){
@@ -440,11 +443,18 @@ function renderBest(){
       var top=(p.r>=0.999);
       return '<div class="peakrow'+(top?" top":"")+'">'+(top?'<span class="star">\u2605</span>':"")+
         '<span class="t num">'+dayName(d)+" "+clock(d)+'</span>'+
-        '<span class="pct">'+Math.round(p.r*100)+'%</span>'+
+        '<span class="pct">'+(fs?"~"+fishFmt(fs.perHrAt(p.r))+" fish/hr":Math.round(p.r*100)+"%")+'</span>'+
         (inMyHours(d)?'<span class="chip fit">your hours</span>':'<span class="n">outside your hours</span>')+
         '</div>';
     }).join("")+
-    '<div class="note" style="margin-top:10px">Peaks are where waves from several tides stack up. A 40% hour still catches fish, it just is not the push.</div>';
+    (fs
+      ? '<div class="note" style="margin-top:10px"><b>Rough numbers.</b> The '+commas(fs.daily)+
+        ' fish counted at RM 19 spread across the hours by tide timing, then carried up to you. '+
+        'Assumes the run holds at that rate'+(fs.live?"":" (from the count you entered)")+
+        '. Sport harvest below you thins it, and these fish are spread across the whole river, not all in casting range. '+
+        'Treat it as ballpark, not a headcount.</div>'
+      : '<div class="note" style="margin-top:10px"><b>Tide timing only.</b> Built from high tide times, tide heights, and your '+
+        S.lagLo+'\u2013'+S.lagHi+' hr lag. Enter a daily sonar count in Run strength and this becomes fish/hr.</div>');
 }
 function sameDay(a,b){return a.getFullYear()===b.getFullYear()&&a.getMonth()===b.getMonth()&&a.getDate()===b.getDate();}
 function dtag(d,ref){
@@ -520,6 +530,7 @@ var LAST_SONAR=null;
 function refreshSonar(){ if(LAST_SONAR)renderSonar(LAST_SONAR.c,LAST_SONAR.d,LAST_SONAR.o,LAST_SONAR.l); }
 function renderSonar(cum2026,daily2026,dateObj,live){
   LAST_SONAR={c:cum2026,d:daily2026,o:dateObj,l:live};
+  setTimeout(function(){renderBest();renderHero();},0);
   var idx=jul1Index(dateObj);
   var v=paceVerdict(cum2026,idx);
   var maxv=Math.max(cum2026,Math.max.apply(null,HIST_YEARS.map(function(y){return v.h[y];})))||1;
@@ -532,7 +543,7 @@ function renderSonar(cum2026,daily2026,dateObj,live){
     '<div class="verdict">'+v.text+'</div>'+
     '<hr class="soft"><p class="label">Cumulative to '+dstr+', by year</p>'+rows+
     '<hr class="soft">'+
-    '<div class="note">Timing tie-in: a jump in the <b style="color:var(--watch)">'+S.bank+' bank</b> daily count is the wave that reaches you ~'+Math.round(S.lagLo*(1-SONAR_FRAC))+'\u2013'+Math.round(S.lagHi*(1-SONAR_FRAC))+' hrs later.</div>'+
+    '<div class="note">Timing tie-in: a jump in the <b style="color:var(--watch)">daily count</b> is the wave that reaches you ~'+Math.round(S.lagLo*(1-SONAR_FRAC))+'\u2013'+Math.round(S.lagHi*(1-SONAR_FRAC))+' hrs later.</div>'+
     '<a class="btnlink" href="'+ADFG_PAGE+'" target="_blank" rel="noopener">Open ADF&G count page</a> '+
     '<button class="ghost" id="editSonar">Edit by hand</button>';
   var es=document.getElementById("editSonar"); if(es) es.onclick=showSonarForm;
@@ -580,29 +591,27 @@ function loadSonar(){
 function renderWhy(){
   document.getElementById("whyBody").innerHTML=
     "<p><b>1. The ocean push.</b> Sockeye enter the Kenai in waves on the high tide down at Cook Inlet.</p>"+
-    "<p><b>2. The counter.</b> ~"+Math.round(S.lagLo*SONAR_FRAC)+"\u2013"+Math.round(S.lagHi*SONAR_FRAC)+" hrs later they pass the RM 19 sonar. You\u2019re on the "+S.bank+" bank, so the "+S.bank+" bank count is your wave.</p>"+
+    "<p><b>2. The counter.</b> ~"+Math.round(S.lagLo*SONAR_FRAC)+"\u2013"+Math.round(S.lagHi*SONAR_FRAC)+" hrs later they pass the RM 19 sonar. ADF&G reports one combined count there, so treat it as the size of the push, not which side of the river it is on.</p>"+
     "<p><b>3. Your spot.</b> Another ~"+Math.round(S.lagLo*(1-SONAR_FRAC))+"\u2013"+Math.round(S.lagHi*(1-SONAR_FRAC))+" hrs to reach you above the Funny River.</p>"+
     "<p><b>Rule of thumb:</b> ~"+S.lagLo+"\u2013"+S.lagHi+" hrs from the mouth\u2019s high tide to your hook, i.e. about 1\u20131.5 mph over ground. High/fast water runs them slower and tighter to the bank.</p>"+
     "<p class=\"note\">Windows are estimates. Run timing shifts year to year with tides, temps, and weather.</p>";
 }
 
 function fillSettings(){
-  setVal("setSpot",S.spot); setVal("setBank",S.bank); setVal("setStation",S.station);
+  setVal("setSpot",S.spot); setVal("setStation",S.station);
   setVal("setLagLo",S.lagLo); setVal("setLagHi",S.lagHi);
   setVal("setPrefLo",S.prefLo); setVal("setPrefHi",S.prefHi);
 }
 function setVal(id,v){var e=document.getElementById(id);if(e)e.value=v;}
 document.getElementById("saveSettings").onclick=function(){
   S.spot=document.getElementById("setSpot").value||DEFAULTS.spot;
-  S.bank=document.getElementById("setBank").value;
   S.station=document.getElementById("setStation").value;
   S.lagLo=parseFloat(document.getElementById("setLagLo").value)||DEFAULTS.lagLo;
   S.lagHi=parseFloat(document.getElementById("setLagHi").value)||DEFAULTS.lagHi;
   S.prefLo=parseInt(document.getElementById("setPrefLo").value,10); if(isNaN(S.prefLo))S.prefLo=DEFAULTS.prefLo;
   S.prefHi=parseInt(document.getElementById("setPrefHi").value,10); if(isNaN(S.prefHi))S.prefHi=DEFAULTS.prefHi;
-  if(S.spots&&S.spots[S.spotIdx]){ S.spots[S.spotIdx].label=S.spot; S.spots[S.spotIdx].bank=S.bank; }
   saveJSON("kenai_settings_v1",S);
-  renderSpot(); renderSpotToggle(); renderWhy(); renderChips(); loadTides();
+  renderSpot(); renderWhy(); renderChips(); loadTides();
   document.getElementById("settings").open=false;
 };
 
@@ -714,7 +723,7 @@ document.getElementById("useHT").onclick=function(){
 };
 document.getElementById("retryTide").onclick=loadTides;
 
-renderSpot(); renderSpotToggle(); renderWhy(); fillSettings(); renderChips();
+renderSpot(); renderWhy(); fillSettings(); renderChips();
 loadTides(); loadSonar(); loadRiver();
 var rzT;
 window.addEventListener("resize",function(){clearTimeout(rzT);rzT=setTimeout(renderBest,180);});
