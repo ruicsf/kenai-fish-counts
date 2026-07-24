@@ -205,10 +205,6 @@
 <details id="settings">
   <summary>Settings</summary>
   <div class="body">
-    <div class="field">
-      <label>My spot (label)</label>
-      <input type="text" id="setSpot">
-    </div>
     <div class="row">
       <div class="field"><label>NOAA tide station</label>
         <select id="setStation">
@@ -250,12 +246,11 @@ var HIST = {
 var HIST_YEARS=[2025,2024,2023,2022];
 
 var DEFAULTS={
-  spot:"Above Funny River (~RM 30.5)",
   station:"9455742",
   lagLo:20, lagHi:30, prefLo:10, prefHi:19
 };
 var S=loadJSON("kenai_settings_v1",{})||{};
-S=Object.assign({},DEFAULTS,S); delete S.highWater; delete S.bank; delete S.spots; delete S.spotIdx;
+S=Object.assign({},DEFAULTS,S); delete S.highWater; delete S.bank; delete S.spots; delete S.spotIdx; delete S.spot;
 // One-time move off Nikiski: Kenai City Pier sits at the river mouth, which is
 // the reference point the lag is measured from. Pick Nikiski again if you want it.
 if(!S.stationV2){ if(S.station==="9455760")S.station="9455742"; S.stationV2=true; saveJSON("kenai_settings_v1",S); }
@@ -302,7 +297,7 @@ function fitsPreferred(w){
 }
 
 function renderSpot(){
-  document.getElementById("spotline").textContent=S.spot+" \u00b7 RM 19 sonar, 30.5 mi upstream";
+  document.getElementById("spotline").textContent="Fishing Holes \u00b7 30.5 mi upstream from the mouth";
 }
 var heroCountdownTarget=null;
 function renderHero(){
@@ -563,7 +558,6 @@ function renderSonar(cum2026,daily2026,dateObj,live){
     '<div class="verdict">'+v.text+'</div>'+
     '<hr class="soft"><p class="label">Cumulative to '+dstr+', by year</p>'+rows+
     '<hr class="soft">'+
-    '<div class="note">Timing tie-in: a jump in the <b style="color:var(--watch)">daily count</b> is the wave that reaches you ~'+Math.round(S.lagLo*(1-SONAR_FRAC))+'\u2013'+Math.round(S.lagHi*(1-SONAR_FRAC))+' hrs later.</div>'+
     '<a class="btnlink" href="'+ADFG_PAGE+'" target="_blank" rel="noopener">Open ADF&G count page</a> '+
     '<button class="ghost" id="editSonar">Edit by hand</button>';
   var es=document.getElementById("editSonar"); if(es) es.onclick=showSonarForm;
@@ -620,18 +614,17 @@ function renderWhy(){
     "<p><b>1. The ocean push.</b> Sockeye enter the Kenai in waves on the high tide down at Cook Inlet.</p>"+
     "<p><b>2. The counter.</b> ~"+Math.round(S.lagLo*SONAR_FRAC)+"\u2013"+Math.round(S.lagHi*SONAR_FRAC)+" hrs later they pass the RM 19 sonar. ADF&G reports one combined count there, so treat it as the size of the push, not which side of the river it is on.</p>"+
     "<p><b>3. Your spot.</b> Another ~"+Math.round(S.lagLo*(1-SONAR_FRAC))+"\u2013"+Math.round(S.lagHi*(1-SONAR_FRAC))+" hrs to reach you above the Funny River.</p>"+
-    "<p><b>Rule of thumb:</b> ~"+S.lagLo+"\u2013"+S.lagHi+" hrs from the mouth\u2019s high tide to your hook, i.e. about 1\u20131.5 mph over ground. High/fast water runs them slower and tighter to the bank.</p>"+
+    "<p><b>Rule of thumb:</b> ~"+S.lagLo+"\u2013"+S.lagHi+" hrs from the mouth\u2019s high tide to your hook, i.e. about 1\u20131.5 mph over ground. High/fast water runs them slower and tighter to shore.</p>"+
     "<p class=\"note\">Windows are estimates. Run timing shifts year to year with tides, temps, and weather.</p>";
 }
 
 function fillSettings(){
-  setVal("setSpot",S.spot); setVal("setStation",S.station);
+  setVal("setStation",S.station);
   setVal("setLagLo",S.lagLo); setVal("setLagHi",S.lagHi);
   setVal("setPrefLo",S.prefLo); setVal("setPrefHi",S.prefHi);
 }
 function setVal(id,v){var e=document.getElementById(id);if(e)e.value=v;}
 document.getElementById("saveSettings").onclick=function(){
-  S.spot=document.getElementById("setSpot").value||DEFAULTS.spot;
   S.station=document.getElementById("setStation").value;
   S.lagLo=parseFloat(document.getElementById("setLagLo").value)||DEFAULTS.lagLo;
   S.lagHi=parseFloat(document.getElementById("setLagHi").value)||DEFAULTS.lagHi;
