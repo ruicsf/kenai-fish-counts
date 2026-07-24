@@ -493,7 +493,7 @@ function renderTimeline(wins,open){
       '<div>'+
         '<div class="leg secondary"><span class="dot tide"></span><span class="t num">'+clock(w.ht)+dtag(w.ht,w.arrStart)+'</span><span class="n">high tide, mouth'+(w.htV!=null?" \u00b7 "+w.htV.toFixed(1)+" ft":"")+'</span>'+(w.htBig?'<span class="chip big">big tide</span>':"")+'</div>'+
         '<div class="leg secondary"><span class="dot watch"></span><span class="t num">'+rangeDays(w.sonarStart,w.sonarEnd,w.arrStart)+'</span><span class="n">crosses RM 19 sonar</span></div>'+
-        '<div class="leg arr"><span class="dot go"></span><span class="t num">peak '+clock(w.peak)+'</span>'+
+        '<div class="leg arr"><span class="dot go"></span><span class="t num">peak '+clock(w.peak)+dtag(w.peak,w.arrStart)+'</span>'+
         '<span class="str'+(relAt(+w.peak)>=0.7?" hi":"")+'">'+strengthLabel(+w.peak)+'</span>'+
         '<span class="n">window '+rangeDays(w.arrStart,w.arrEnd,w.arrStart)+'</span>'+(peakInMyHours(w)?'<span class="chip fit">during your hours</span>':'')+(isOpen?'<span class="chip fit" style="background:rgba(224,72,58,.15);border-color:rgba(224,72,58,.4);color:var(--go)">now</span>':'')+'</div>'+
       '</div>';
@@ -506,7 +506,11 @@ function tick(){
 
 function tideURL(){
   var now=new Date();
-  var b=new Date(+now-24*MS_H), e=new Date(+now+3*24*MS_H);
+  // Fish arriving now left the mouth up to lagHi hrs ago, and the bell reaches
+  // ~3 sigma beyond that. Fetching only 24 hrs back drops every tide that
+  // produces arrivals right now, which reads as "0% / ~0 fish per hour".
+  var back=Math.ceil(S.lagHi/24)+2;
+  var b=new Date(+now-back*24*MS_H), e=new Date(+now+3*24*MS_H);
   return "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=predictions&application=kenai-run-timer"+
     "&datum=MLLW&station="+encodeURIComponent(S.station)+"&time_zone=lst_ldt&units=english&interval=hilo&format=json"+
     "&begin_date="+ymd(b)+"&end_date="+ymd(e);
