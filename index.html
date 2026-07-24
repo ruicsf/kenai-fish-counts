@@ -59,8 +59,14 @@
   .leg .dot{width:8px; height:8px; border-radius:50%; flex:0 0 8px; transform:translateY(1px)}
   .leg .t{font-weight:700; min-width:118px}
   .leg .n{color:var(--muted); font-size:12.5px}
+  .leg.secondary{opacity:0.6; font-size:13px}
+  .leg.secondary .t{font-weight:400}
+  .leg.secondary .n{font-size:12px}
   .dot.tide{background:var(--tide)} .dot.watch{background:var(--watch)} .dot.go{background:var(--go)}
   .leg.arr .t{color:var(--go)}
+  .leg .str{font-size:12.5px; color:var(--muted); font-variant-numeric:tabular-nums;
+    border:1px solid var(--line); border-radius:999px; padding:1px 8px}
+  .leg .str.hi{color:var(--go); border-color:rgba(224,72,58,.45); background:rgba(224,72,58,.10); font-weight:700}
   .bignum{font-size:32px; font-weight:800; letter-spacing:-.01em}
   .verdict{font-size:14px; margin-top:8px}
   .yearrow{display:grid; grid-template-columns:52px 1fr 96px; align-items:center; gap:8px; font-size:13px; padding:4px 0}
@@ -155,7 +161,6 @@
   <div class="big num" id="heroBig">&mdash;</div>
   <div class="range num" id="heroRange"></div>
   <div class="meta" id="heroMeta"></div>
-  <div class="checkpoint" id="heroCheck"></div>
 </section>
 
 <section class="card">
@@ -352,8 +357,6 @@ function renderHero(){
       (src.htV!=null?" ("+src.htV.toFixed(1)+" ft)":"")+' high tide at the mouth.';
     heroCountdownTarget={el:"cd",time:d};
   }
-  document.getElementById("heroCheck").innerHTML='Confirm it: the <b>RM 19 sonar</b> count should climb around '+
-    clock(src.sonarStart)+"\u2013"+clock(src.sonarEnd)+" (fish crossing RM 19).";
   renderTimeline(wins,open);
   renderBest();
 }
@@ -374,20 +377,29 @@ function buildCurve(hours,stepMin){
   for(var m=0;m<hours*60;m+=stepMin){var t=now+m*60000;pts.push({t:t,i:intensityAt(t)});}
   var mx=Math.max.apply(null,pts.map(function(p){return p.i;}))||1;
   pts.forEach(function(p){p.r=p.i/mx;});
+  pts.mx=mx;
   return pts;
 }
 var CURVE=null;
 function curveData(){
   var fine=buildCurve(48,15);                 // 15-min resolution, one source of truth
   var peaks=findPeaks(fine).sort(function(a,b){return a.t-b.t;});
-  CURVE={fine:fine,peaks:peaks,nowR:fine.length?fine[0].r:0};
+  CURVE={fine:fine,peaks:peaks,mx:fine.mx||1,nowR:fine.length?fine[0].r:0};
   return CURVE;
 }
 function findPeaks(pts){
   var out=[];
+  // A peak already in progress declines from the first sample, so it has no
+  // rising left neighbour and the scan below would miss it entirely.
+  if(pts.length>1&&pts[0].i>=pts[1].i&&pts[0].r>0.3) out.push(pts[0]);
   for(var k=1;k<pts.length-1;k++)
     if(pts[k].i>pts[k-1].i&&pts[k].i>=pts[k+1].i&&pts[k].r>0.3) out.push(pts[k]);
   return out.sort(function(a,b){return b.i-a.i;});
+}
+function relAt(ms){var c=CURVE||curveData();return c.mx?intensityAt(ms)/c.mx:0;}
+function strengthLabel(ms){
+  var r=relAt(ms), fs=fishScale();
+  return fs?("~"+fishFmt(fs.perHrAt(r))+" fish/hr"):(Math.round(r*100)+"%");
 }
 function inMyHours(d){var h=d.getHours();return h>=S.prefLo&&h<S.prefHi;}
 function peakInMyHours(w){return inMyHours(w.peak);}
@@ -476,9 +488,11 @@ function renderTimeline(wins,open){
     div.innerHTML=
       '<div class="day">'+dayName(w.arrStart)+'<span class="d2 num">'+w.arrStart.getDate()+'</span></div>'+
       '<div>'+
-        '<div class="leg"><span class="dot tide"></span><span class="t num">'+clock(w.ht)+dtag(w.ht,w.arrStart)+'</span><span class="n">high tide, mouth'+(w.htV!=null?" \u00b7 "+w.htV.toFixed(1)+" ft":"")+'</span>'+(w.htBig?'<span class="chip big">big tide</span>':"")+'</div>'+
-        '<div class="leg"><span class="dot watch"></span><span class="t num">'+rangeDays(w.sonarStart,w.sonarEnd,w.arrStart)+'</span><span class="n">crosses RM 19 sonar</span></div>'+
-        '<div class="leg arr"><span class="dot go"></span><span class="t num">peak '+clock(w.peak)+'</span>'+'<span class="n">window '+rangeDays(w.arrStart,w.arrEnd,w.arrStart)+'</span>'+(peakInMyHours(w)?'<span class="chip fit">during your hours</span>':'')+(isOpen?'<span class="chip fit" style="background:rgba(224,72,58,.15);border-color:rgba(224,72,58,.4);color:var(--go)">now</span>':'')+'</div>'+
+        '<div class="leg secondary"><span class="dot tide"></span><span class="t num">'+clock(w.ht)+dtag(w.ht,w.arrStart)+'</span><span class="n">high tide, mouth'+(w.htV!=null?" \u00b7 "+w.htV.toFixed(1)+" ft":"")+'</span>'+(w.htBig?'<span class="chip big">big tide</span>':"")+'</div>'+
+        '<div class="leg secondary"><span class="dot watch"></span><span class="t num">'+rangeDays(w.sonarStart,w.sonarEnd,w.arrStart)+'</span><span class="n">crosses RM 19 sonar</span></div>'+
+        '<div class="leg arr"><span class="dot go"></span><span class="t num">peak '+clock(w.peak)+'</span>'+
+        '<span class="str'+(relAt(+w.peak)>=0.7?" hi":"")+'">'+strengthLabel(+w.peak)+'</span>'+
+        '<span class="n">window '+rangeDays(w.arrStart,w.arrEnd,w.arrStart)+'</span>'+(peakInMyHours(w)?'<span class="chip fit">during your hours</span>':'')+(isOpen?'<span class="chip fit" style="background:rgba(224,72,58,.15);border-color:rgba(224,72,58,.4);color:var(--go)">now</span>':'')+'</div>'+
       '</div>';
     el.appendChild(div);
   });
