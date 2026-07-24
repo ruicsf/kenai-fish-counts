@@ -110,22 +110,22 @@
   .gauge{display:flex; gap:18px; flex-wrap:wrap; align-items:baseline; margin-bottom:4px}
   .gauge .big{font-size:26px; font-weight:700; font-variant-numeric:tabular-nums}
   .gauge .vs{font-size:13px; color:#9fb4b8}
-  .nowline{font-size:13px; color:var(--muted); margin-bottom:10px}
-  .nowline b{color:var(--text); font-size:15px}
-  .strip{display:flex; align-items:flex-end; gap:1px; height:48px}
+  .nowline{font-size:15px; color:var(--muted); margin-bottom:10px}
+  .nowline b{color:var(--text); font-size:18px}
+  .strip{display:flex; align-items:flex-end; gap:1px; height:64px}
   .strip i{flex:1 1 0; min-width:0; background:var(--go); border-radius:1px}
-  .strip i.db{box-shadow:-1px 0 0 var(--faint)}
-  .strip i.nowbar{box-shadow:-2px 0 0 var(--tide)}
-  .nowline .sub2{color:var(--faint); font-size:12px}
-  .ticks{display:flex; font-size:10px; color:var(--faint); margin-top:4px}
-  .peakrow{display:flex; align-items:center; flex-wrap:wrap; gap:9px; margin-top:9px; font-size:14px}
+  .strip i.db{box-shadow:-2px 0 0 var(--muted)}
+  .strip i.nowbar{box-shadow:-3px 0 0 var(--tide)}
+  .nowline .sub2{color:var(--faint); font-size:14px}
+  .ticks{display:flex; font-size:13px; color:var(--muted); margin-top:6px}
+  .peakrow{display:flex; align-items:center; flex-wrap:wrap; gap:9px; margin-top:11px; font-size:17px}
   .peakrow .t{color:var(--go); font-weight:700}
-  .peakrow .pct{color:var(--muted); font-variant-numeric:tabular-nums}
+  .peakrow .pct{color:var(--muted); font-variant-numeric:tabular-nums; font-size:16px}
   .peakrow.top{background:rgba(224,72,58,.10); border:1px solid rgba(224,72,58,.32);
     border-radius:10px; padding:8px 10px; margin-top:10px}
-  .peakrow.top .t{font-size:16px}
+  .peakrow.top .t{font-size:19px}
   .peakrow.top .pct{color:var(--go); font-weight:700}
-  .peakrow .star{color:var(--go); font-size:12px}
+  .peakrow .star{color:var(--go); font-size:15px}
   body{padding-top:env(safe-area-inset-top); padding-bottom:env(safe-area-inset-bottom)}
   footer{color:var(--faint); font-size:11.5px; margin:22px 2px; line-height:1.6}
   hr.soft{border:none; border-top:1px solid var(--line); margin:14px 0}
@@ -163,6 +163,11 @@
   <div class="meta" id="heroMeta"></div>
 </section>
 
+<section class="card" id="best">
+  <p class="label">Best bets &middot; next 48 hrs</p>
+  <div id="bestBody"><div class="note">Building&hellip;</div></div>
+</section>
+
 <section class="card">
   <p class="label">Upcoming windows at your spot</p>
   <div id="timeline"><div class="note">Loading&hellip;</div></div>
@@ -183,11 +188,6 @@
 <section class="card" id="sonar">
   <p class="label">Run strength &middot; sonar at RM 19</p>
   <div id="sonarBody"><div class="note">Checking ADF&amp;G&hellip;</div></div>
-</section>
-
-<section class="card" id="best">
-  <p class="label">Best bets &middot; next 48 hrs</p>
-  <div id="bestBody"><div class="note">Building&hellip;</div></div>
 </section>
 
 <section class="card" id="river">
@@ -219,11 +219,6 @@
       <div class="field"><label>Travel lag, min (hrs)</label><input type="number" id="setLagLo" step="0.5" min="0"></div>
       <div class="field"><label>Travel lag, max (hrs)</label><input type="number" id="setLagHi" step="0.5" min="0"></div>
     </div>
-    <div class="row">
-      <div class="field"><label>Fish my hours from (24h)</label><input type="number" id="setPrefLo" min="0" max="23"></div>
-      <div class="field"><label>&hellip;to (24h)</label><input type="number" id="setPrefHi" min="0" max="23"></div>
-    </div>
-    <p class="note" style="margin-top:0; margin-bottom:12px"><small>Use 24-hour format: 0&ndash;23. E.g., 10 is 10 AM, 19 is 7 PM.</small></p>
     <button class="primary" id="saveSettings">Save settings</button>
     <p class="note" style="margin-top:10px">Lag is hours from high tide at the mouth to fish reaching your spot. Your holes are at about river&nbsp;mile&nbsp;47 (ADF&amp;G puts the Kenai Keys markers at 44.6). Default 31&ndash;47 assumes 1&ndash;1.5&nbsp;mph over ground across those 47&nbsp;miles. The RM&nbsp;19 sonar checkpoint scales with it automatically. Use the pace chips above for a starting point, then fine-tune here once you've calibrated against real fishing.</p>
   </div>
@@ -254,7 +249,7 @@ var SONAR_FRAC=SONAR_RM/SPOT_RM;
 
 var DEFAULTS={
   station:"9455742",
-  lagLo:31, lagHi:47, prefLo:10, prefHi:19, geoRM:47
+  lagLo:31, lagHi:47, geoRM:47
 };
 var RAW=loadJSON("kenai_settings_v1",{})||{};
 var S=Object.assign({},DEFAULTS,RAW); delete S.highWater; delete S.bank; delete S.spots; delete S.spotIdx; delete S.spot;
@@ -294,15 +289,6 @@ function buildWindows(){
     arrEnd:new Date(+ht+lagHi*MS_H)
   };}).filter(function(w){return w.arrEnd>now;}).sort(function(a,b){return a.arrStart-b.arrStart;});
 }
-function fitsPreferred(w){
-  var days=[w.arrStart,w.arrEnd];
-  for(var i=0;i<days.length;i++){var base=days[i];
-    var ps=new Date(base.getFullYear(),base.getMonth(),base.getDate(),S.prefLo,0);
-    var pe=new Date(base.getFullYear(),base.getMonth(),base.getDate(),S.prefHi,0);
-    if(w.arrStart<pe && w.arrEnd>ps) return true;
-  }
-  return false;
-}
 
 function renderSpot(){
   document.getElementById("spotline").textContent="Fishing Holes \u00b7 RM "+SPOT_RM+", "+SPOT_RM+" mi upstream from the mouth";
@@ -339,13 +325,12 @@ function renderHero(){
   var fsH=fishScale();
   var strength=(show.r==null)?"":
     '<span class="chip pk">'+(fsH?"~"+fishFmt(fsH.perHrAt(show.r))+" fish/hr":Math.round(show.r*100)+"% on tide timing")+'</span>';
-  var mine=inMyHours(d)?'<span class="chip fit">during your hours</span>':"";
 
   if(near){
     hero.className="card go";
     document.getElementById("heroState").innerHTML='<span class="pulse">\u25cf</span> Peak arriving now';
     document.getElementById("heroBig").textContent=clock(d);
-    document.getElementById("heroRange").innerHTML=strength+mine;
+    document.getElementById("heroRange").innerHTML=strength;
     document.getElementById("heroMeta").innerHTML='This is the densest arrival of the wave. Rode the '+
       clock(src.ht)+(src.htV!=null?" ("+src.htV.toFixed(1)+" ft)":"")+' high tide at the mouth.'+
       (open?' Window runs to '+clock(open.arrEnd)+'.':"");
@@ -354,7 +339,7 @@ function renderHero(){
     hero.className="card next";
     document.getElementById("heroState").textContent="Next peak \u00b7 "+dayName(d);
     document.getElementById("heroBig").textContent=clock(d);
-    document.getElementById("heroRange").innerHTML='in <span id="cd" class="num"></span> '+strength+mine;
+    document.getElementById("heroRange").innerHTML='in <span id="cd" class="num"></span> '+strength;
     document.getElementById("heroMeta").innerHTML='Right now you\u2019re at <b>'+Math.round(nowR*100)+
       '%</b> of the best arrival in the next 48 hrs. This peak rode the '+clock(src.ht)+
       (src.htV!=null?" ("+src.htV.toFixed(1)+" ft)":"")+' high tide at the mouth.';
@@ -404,8 +389,6 @@ function strengthLabel(ms){
   var r=relAt(ms), fs=fishScale();
   return fs?("~"+fishFmt(fs.perHrAt(r))+" fish/hr"):(Math.round(r*100)+"%");
 }
-function inMyHours(d){var h=d.getHours();return h>=S.prefLo&&h<S.prefHi;}
-function peakInMyHours(w){return inMyHours(w.peak);}
 // Curve gives the SHAPE of arrivals; the sonar daily count gives the SCALE.
 // mean(r) over the window represents an average hour, so D/24 fish land there.
 function fishScale(){
@@ -434,8 +417,8 @@ function renderBest(){
               .sort(function(a,b){return a.t-b.t;});
   var bars=pts.map(function(p,i){
     var d=new Date(p.t);
-    var h=Math.max(3,Math.round(p.r*46));
-    var op=(0.22+p.r*0.78).toFixed(2);
+    var h=Math.max(4,Math.round(p.r*60));
+    var op=(0.32+p.r*0.68).toFixed(2);
     var prev=i?new Date(pts[i-1].t):null;
     var mid=(prev&&d.getDate()!==prev.getDate())?" db":"";   // midnight divider
     return '<i class="'+(i===0?"nowbar":"")+mid+'" style="height:'+h+'px;opacity:'+op+'"></i>';
@@ -461,7 +444,6 @@ function renderBest(){
       return '<div class="peakrow'+(top?" top":"")+'">'+(top?'<span class="star">\u2605</span>':"")+
         '<span class="t num">'+dayName(d)+" "+clock(d)+'</span>'+
         '<span class="pct">'+(fs?"~"+fishFmt(fs.perHrAt(p.r))+" fish/hr":Math.round(p.r*100)+"%")+'</span>'+
-        (inMyHours(d)?'<span class="chip fit">during your hours</span>':'<span class="n">outside your hours</span>')+
         '</div>';
     }).join("")+
     (fs
@@ -495,7 +477,7 @@ function renderTimeline(wins,open){
         '<div class="leg secondary"><span class="dot watch"></span><span class="t num">'+rangeDays(w.sonarStart,w.sonarEnd,w.arrStart)+'</span><span class="n">crosses RM 19 sonar</span></div>'+
         '<div class="leg arr"><span class="dot go"></span><span class="t num">peak '+clock(w.peak)+dtag(w.peak,w.arrStart)+'</span>'+
         '<span class="str'+(relAt(+w.peak)>=0.7?" hi":"")+'">'+strengthLabel(+w.peak)+'</span>'+
-        '<span class="n">window '+rangeDays(w.arrStart,w.arrEnd,w.arrStart)+'</span>'+(peakInMyHours(w)?'<span class="chip fit">during your hours</span>':'')+(isOpen?'<span class="chip fit" style="background:rgba(224,72,58,.15);border-color:rgba(224,72,58,.4);color:var(--go)">now</span>':'')+'</div>'+
+        '<span class="n">window '+rangeDays(w.arrStart,w.arrEnd,w.arrStart)+'</span>'+(isOpen?'<span class="chip fit" style="background:rgba(224,72,58,.15);border-color:rgba(224,72,58,.4);color:var(--go)">now</span>':'')+'</div>'+
       '</div>';
     el.appendChild(div);
   });
@@ -633,15 +615,12 @@ function renderWhy(){
 function fillSettings(){
   setVal("setStation",S.station);
   setVal("setLagLo",S.lagLo); setVal("setLagHi",S.lagHi);
-  setVal("setPrefLo",S.prefLo); setVal("setPrefHi",S.prefHi);
 }
 function setVal(id,v){var e=document.getElementById(id);if(e)e.value=v;}
 document.getElementById("saveSettings").onclick=function(){
   S.station=document.getElementById("setStation").value;
   S.lagLo=parseFloat(document.getElementById("setLagLo").value)||DEFAULTS.lagLo;
   S.lagHi=parseFloat(document.getElementById("setLagHi").value)||DEFAULTS.lagHi;
-  S.prefLo=parseInt(document.getElementById("setPrefLo").value,10); if(isNaN(S.prefLo))S.prefLo=DEFAULTS.prefLo;
-  S.prefHi=parseInt(document.getElementById("setPrefHi").value,10); if(isNaN(S.prefHi))S.prefHi=DEFAULTS.prefHi;
   saveJSON("kenai_settings_v1",S);
   renderSpot(); renderWhy(); renderChips(); loadTides();
   document.getElementById("settings").open=false;
