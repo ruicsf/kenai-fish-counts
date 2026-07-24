@@ -225,7 +225,7 @@
     </div>
     <p class="note" style="margin-top:0; margin-bottom:12px"><small>Use 24-hour format: 0&ndash;23. E.g., 10 is 10 AM, 19 is 7 PM.</small></p>
     <button class="primary" id="saveSettings">Save settings</button>
-    <p class="note" style="margin-top:10px">Lag is hours from high tide at the mouth to fish reaching your spot. Default 20&ndash;30 assumes fish make 1&ndash;1.5&nbsp;mph over ground across the 30.5&nbsp;miles. The RM&nbsp;19 sonar checkpoint scales with it automatically. Use the pace chips above for a starting point, then fine-tune here once you've calibrated against real fishing.</p>
+    <p class="note" style="margin-top:10px">Lag is hours from high tide at the mouth to fish reaching your spot. Your holes are at about river&nbsp;mile&nbsp;47 (ADF&amp;G puts the Kenai Keys markers at 44.6). Default 31&ndash;47 assumes 1&ndash;1.5&nbsp;mph over ground across those 47&nbsp;miles. The RM&nbsp;19 sonar checkpoint scales with it automatically. Use the pace chips above for a starting point, then fine-tune here once you've calibrated against real fishing.</p>
   </div>
 </details>
 
@@ -245,12 +245,23 @@ var HIST = {
 };
 var HIST_YEARS=[2025,2024,2023,2022];
 
+// River geometry, from ADF&G published mile markers. Kenai Keys is RM 44.6
+// and Thompson's Hole RM 45.8-46.3; the holes sit ~1.7 mi straight-line
+// upstream of Dot's, which is ~2.5 river miles once the meander is counted.
+var SPOT_RM=47;          // your holes, miles from the mouth
+var SONAR_RM=19;         // ADF&G DIDSON sonar
+var SONAR_FRAC=SONAR_RM/SPOT_RM;
+
 var DEFAULTS={
   station:"9455742",
-  lagLo:20, lagHi:30, prefLo:10, prefHi:19
+  lagLo:31, lagHi:47, prefLo:10, prefHi:19, geoRM:47
 };
-var S=loadJSON("kenai_settings_v1",{})||{};
-S=Object.assign({},DEFAULTS,S); delete S.highWater; delete S.bank; delete S.spots; delete S.spotIdx; delete S.spot;
+var RAW=loadJSON("kenai_settings_v1",{})||{};
+var S=Object.assign({},DEFAULTS,RAW); delete S.highWater; delete S.bank; delete S.spots; delete S.spotIdx; delete S.spot;
+// Lag saved before the RM 30.5 -> 47 correction would silently override the new
+// defaults. Test the RAW saved object, not the merged one, or the default fills
+// geoRM in and the check can never fire. Resets once, then leaves edits alone.
+if(RAW.geoRM!==SPOT_RM){ S.lagLo=DEFAULTS.lagLo; S.lagHi=DEFAULTS.lagHi; saveJSON("kenai_settings_v1",S); }
 // One-time move off Nikiski: Kenai City Pier sits at the river mouth, which is
 // the reference point the lag is measured from. Pick Nikiski again if you want it.
 if(!S.stationV2){ if(S.station==="9455760")S.station="9455742"; S.stationV2=true; saveJSON("kenai_settings_v1",S); }
@@ -269,9 +280,6 @@ function fmtDur(ms){if(ms<0)ms=0;var tot=Math.floor(ms/1000);var h=Math.floor(to
 function commas(n){return Math.round(n).toLocaleString("en-US");}
 
 var HIGH_TIDES=[];
-// RM 19 sits 19 of the 30.5 miles up from the mouth, so the sonar crossing
-// is that fraction of whatever lag is in effect. Adjust lag, this follows.
-var SONAR_FRAC=19/30.5;
 function buildWindows(){
   var lagLo=S.lagLo, lagHi=S.lagHi;
   var now=new Date();
@@ -297,7 +305,7 @@ function fitsPreferred(w){
 }
 
 function renderSpot(){
-  document.getElementById("spotline").textContent="Fishing Holes \u00b7 30.5 mi upstream from the mouth";
+  document.getElementById("spotline").textContent="Fishing Holes \u00b7 RM "+SPOT_RM+", "+SPOT_RM+" mi upstream from the mouth";
 }
 var heroCountdownTarget=null;
 function renderHero(){
@@ -613,7 +621,7 @@ function renderWhy(){
   document.getElementById("whyBody").innerHTML=
     "<p><b>1. The ocean push.</b> Sockeye enter the Kenai in waves on the high tide down at Cook Inlet.</p>"+
     "<p><b>2. The counter.</b> ~"+Math.round(S.lagLo*SONAR_FRAC)+"\u2013"+Math.round(S.lagHi*SONAR_FRAC)+" hrs later they pass the RM 19 sonar. ADF&G reports one combined count there, so treat it as the size of the push, not which side of the river it is on.</p>"+
-    "<p><b>3. Your spot.</b> Another ~"+Math.round(S.lagLo*(1-SONAR_FRAC))+"\u2013"+Math.round(S.lagHi*(1-SONAR_FRAC))+" hrs to reach you above the Funny River.</p>"+
+    "<p><b>3. Your spot.</b> Another ~"+Math.round(S.lagLo*(1-SONAR_FRAC))+"\u2013"+Math.round(S.lagHi*(1-SONAR_FRAC))+" hrs to cover the last "+(SPOT_RM-SONAR_RM)+" miles up to you.</p>"+
     "<p><b>Rule of thumb:</b> ~"+S.lagLo+"\u2013"+S.lagHi+" hrs from the mouth\u2019s high tide to your hook, i.e. about 1\u20131.5 mph over ground. High/fast water runs them slower and tighter to shore.</p>"+
     "<p class=\"note\">Windows are estimates. Run timing shifts year to year with tides, temps, and weather.</p>";
 }
@@ -636,12 +644,18 @@ document.getElementById("saveSettings").onclick=function(){
 };
 
 // ---- River conditions -> recommended pace ----
-// Presets are hours from mouth high tide to your spot over 30.5 river miles.
+// Presets are speed bands over ground; the hours fall out of SPOT_RM so they
+// stay correct if the river mile is ever corrected.
+function mkPreset(key,label,vLo,vHi){
+  return {key:key,label:label,vLo:vLo,vHi:vHi,
+          lo:Math.round(SPOT_RM/vHi), hi:Math.round(SPOT_RM/vLo),
+          hint:vLo+"\u2013"+vHi+" mph"};
+}
 var PRESETS=[
-  {key:"low",  label:"Low water",  lo:18, hi:27, hint:"1.1\u20131.7 mph"},
-  {key:"norm", label:"Normal",     lo:20, hi:30, hint:"1.0\u20131.5 mph"},
-  {key:"high", label:"High",       lo:23, hi:33, hint:"0.9\u20131.3 mph"},
-  {key:"vhigh",label:"Very high",  lo:26, hi:36, hint:"0.85\u20131.2 mph"}
+  mkPreset("low",  "Low water", 1.1,  1.7),
+  mkPreset("norm", "Normal",    1.0,  1.5),
+  mkPreset("high", "High",      0.9,  1.3),
+  mkPreset("vhigh","Very high", 0.85, 1.2)
 ];
 var USGS_SITE="15266300";
 var USGS_PAGE="https://waterdata.usgs.gov/monitoring-location/USGS-"+USGS_SITE+"/";
@@ -728,7 +742,7 @@ function renderChips(){
   });
   document.getElementById("lagNow").innerHTML=
     "In use: <b>"+S.lagLo+"\u2013"+S.lagHi+" hrs</b> to your spot ("+
-    (30.5/S.lagHi).toFixed(2)+"\u2013"+(30.5/S.lagLo).toFixed(2)+" mph over ground). "+
+    (SPOT_RM/S.lagHi).toFixed(2)+"\u2013"+(SPOT_RM/S.lagLo).toFixed(2)+" mph over ground). "+
     "Fine-tune in Settings once you've calibrated against real fishing.";
 }
 
