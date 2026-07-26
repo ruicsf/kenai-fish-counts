@@ -129,6 +129,9 @@
   .striplegend .sw.fut{background:var(--go)}
   .striplegend .sw.nowline{width:3px; height:14px; border-radius:1px; background:var(--tide)}
   .striplegend .sw.mid{width:2px; height:14px; border-radius:1px; background:var(--muted)}
+  .leg .dir{font-size:12.5px; padding:1px 8px; border-radius:999px; white-space:nowrap}
+  .leg .dir.rising{color:var(--tide); border:1px solid rgba(86,196,181,.4)}
+  .leg .dir.fading{color:var(--faint); border:1px solid var(--line)}
   .legend{font-size:13px; line-height:1.7; color:var(--faint);
     border-bottom:1px solid var(--line); padding-bottom:10px; margin:-4px 0 12px}
   .legend b{color:var(--muted); font-weight:700}
@@ -189,8 +192,10 @@
   <p class="label">Upcoming windows at your spot</p>
   <p class="note legend">
     <b>&#9733; peak</b> the hour fish are thickest &middot;
-    <b>best</b> top hour in that window when there's no clear peak &middot;
-    <b>big tide</b> 16&nbsp;ft or more at the mouth &middot;
+    <b>best</b> no peak in this window, so the top hour in it &middot;
+    <b>&uarr; still building</b> go late, it climbs past the window &middot;
+    <b>&darr; fading</b> go early, you're on the tail &middot;
+    <b>big tide</b> 16&nbsp;ft or more &middot;
     <b>now</b> window is open
   </p>
   <div id="timeline"><div class="note">Loading&hellip;</div></div>
@@ -452,15 +457,20 @@ function windowPeak(w){
 }
 // For a window with no local maximum, the wave centre is just the arithmetic
 // middle of the range already printed below it, which tells you nothing. The
-// useful number is where the curve is actually highest inside the window: on a
-// rising stretch that lands near the end, so it says "fish this one late".
+// useful number is where the curve is actually highest inside the window, plus
+// WHICH WAY it is going: best at the end means it is still building toward a
+// peak past the window; best at the start means you are on the fading tail.
 function bestInWindow(w){
   var best=null;
   for(var t=+w.arrStart;t<=+w.arrEnd;t+=15*60000){
     var v=intensityAt(t);
     if(!best||v>best.v) best={t:t,v:v};
   }
-  return best?new Date(best.t):w.peak;
+  if(!best)return {t:w.peak,kind:""};
+  var tol=30*60000;
+  var kind=(Math.abs(best.t-(+w.arrEnd))<tol)?"rising":
+           (Math.abs(best.t-(+w.arrStart))<tol)?"fading":"";
+  return {t:new Date(best.t),kind:kind};
 }
 function strengthLabel(ms){
   var r=relAt(ms), fs=fishScale();
@@ -607,15 +617,18 @@ function renderTimeline(wins,open){
     // say so. Showing both was redundant, and the ~30 min gap between them read
     // as a contradiction.
     var hit=windowPeak(w);
-    var mark=hit?new Date(hit.t):bestInWindow(w);
+    var bw=hit?null:bestInWindow(w);
+    var mark=hit?new Date(hit.t):bw.t;
     var lbl=hit?'\u2605 peak ':'best ';
+    var dir=(bw&&bw.kind)?'<span class="dir '+bw.kind+'">'+
+      (bw.kind==="rising"?"\u2191 still building":"\u2193 fading")+'</span>':"";
     div.innerHTML=
       '<div class="day">'+dayName(w.arrStart)+'<span class="d2 num">'+w.arrStart.getDate()+'</span></div>'+
       '<div>'+
         '<div class="leg secondary"><span class="dot tide"></span><span class="t num">'+clock(w.ht)+dtag(w.ht,w.arrStart)+'</span><span class="n">high tide, mouth'+(w.htV!=null?" \u00b7 "+w.htV.toFixed(1)+" ft":"")+'</span>'+(w.htBig?'<span class="chip big">big tide</span>':"")+'</div>'+
         '<div class="leg secondary"><span class="dot watch"></span><span class="t num">'+rangeDays(w.sonarStart,w.sonarEnd,w.arrStart)+'</span><span class="n">crosses RM 19 sonar</span></div>'+
         '<div class="leg arr'+(hit?" ispeak":"")+'"><span class="dot go"></span><span class="t num">'+lbl+clock(mark)+dtag(mark,w.arrStart)+'</span>'+
-        '<span class="str'+(relAt(+mark)>=0.7?" hi":"")+'">'+strengthLabel(+mark)+'</span>'+
+        '<span class="str'+(relAt(+mark)>=0.7?" hi":"")+'">'+strengthLabel(+mark)+'</span>'+dir+
         '<span class="n">window '+rangeDays(w.arrStart,w.arrEnd,w.arrStart)+'</span>'+
         (isOpen?'<span class="chip fit" style="background:rgba(224,72,58,.15);border-color:rgba(224,72,58,.4);color:var(--go)">now</span>':'')+'</div>'+
       '</div>';
