@@ -390,10 +390,13 @@ function curveData(){
   var fine=buildCurve(BACK_HRS,FWD_HRS,15);   // 15-min resolution, one source of truth
   var peaks=findPeaks(fine).sort(function(a,b){return a.t-b.t;});
   var now=Date.now();
+  var mx=fine.mx||1;
   CURVE={fine:fine, peaks:peaks,
          future:peaks.filter(function(p){return p.t>=now;}),
-         mx:fine.mx||1, nowIdx:fine.nowIdx||0,
-         nowR:fine.length?fine[fine.nowIdx||0].r:0};
+         mx:mx, nowIdx:fine.nowIdx||0,
+         // Snapping the grid to absolute time means the nearest sample can be up
+         // to one step old, so evaluate "right now" directly instead of reading it.
+         nowR:fine.length?intensityAt(now)/mx:0};
   return CURVE;
 }
 function findPeaks(pts){
