@@ -410,6 +410,17 @@ function findPeaks(pts){
   return out.sort(function(a,b){return b.i-a.i;});
 }
 function relAt(ms){var c=CURVE||curveData();return c.mx?intensityAt(ms)/c.mx:0;}
+// A tide's wave centre is NOT necessarily a peak in what actually arrives. With
+// a 16 hr window and tides 12.4 hrs apart the waves merge, so several tides can
+// share one real maximum and the small ones produce none. Only label a window
+// with a peak when an actual local maximum of the summed curve falls inside it.
+function peakChip(w){
+  var c=CURVE||curveData();
+  var hit=c.peaks.filter(function(p){return p.t>=+w.arrStart&&p.t<=+w.arrEnd;})
+                 .sort(function(a,b){return b.i-a.i;})[0];
+  if(!hit)return"";
+  return '<span class="chip pk">\u2605 peak '+clock(new Date(hit.t))+'</span>';
+}
 function strengthLabel(ms){
   var r=relAt(ms), fs=fishScale();
   return fs?("~"+fishFmt(fs.perHrAt(r))+" fish/hr"):(Math.round(r*100)+"%");
@@ -532,9 +543,10 @@ function renderTimeline(wins,open){
       '<div>'+
         '<div class="leg secondary"><span class="dot tide"></span><span class="t num">'+clock(w.ht)+dtag(w.ht,w.arrStart)+'</span><span class="n">high tide, mouth'+(w.htV!=null?" \u00b7 "+w.htV.toFixed(1)+" ft":"")+'</span>'+(w.htBig?'<span class="chip big">big tide</span>':"")+'</div>'+
         '<div class="leg secondary"><span class="dot watch"></span><span class="t num">'+rangeDays(w.sonarStart,w.sonarEnd,w.arrStart)+'</span><span class="n">crosses RM 19 sonar</span></div>'+
-        '<div class="leg arr"><span class="dot go"></span><span class="t num">peak '+clock(w.peak)+dtag(w.peak,w.arrStart)+'</span>'+
+        '<div class="leg arr"><span class="dot go"></span><span class="t num">mid '+clock(w.peak)+dtag(w.peak,w.arrStart)+'</span>'+
         '<span class="str'+(relAt(+w.peak)>=0.7?" hi":"")+'">'+strengthLabel(+w.peak)+'</span>'+
-        '<span class="n">window '+rangeDays(w.arrStart,w.arrEnd,w.arrStart)+'</span>'+(isOpen?'<span class="chip fit" style="background:rgba(224,72,58,.15);border-color:rgba(224,72,58,.4);color:var(--go)">now</span>':'')+'</div>'+
+        '<span class="n">window '+rangeDays(w.arrStart,w.arrEnd,w.arrStart)+'</span>'+
+        peakChip(w)+(isOpen?'<span class="chip fit" style="background:rgba(224,72,58,.15);border-color:rgba(224,72,58,.4);color:var(--go)">now</span>':'')+'</div>'+
       '</div>';
     el.appendChild(div);
   });
