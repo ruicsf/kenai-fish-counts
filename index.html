@@ -121,6 +121,9 @@
   .strip i.nowbar{box-shadow:-3px 0 0 var(--tide)}
   .nowline .sub2{color:var(--faint); font-size:14px}
   .ticks{display:flex; font-size:13px; color:var(--muted); margin-top:6px}
+  .legend{font-size:13px; line-height:1.7; color:var(--faint);
+    border-bottom:1px solid var(--line); padding-bottom:10px; margin:-4px 0 12px}
+  .legend b{color:var(--muted); font-weight:700}
   .peakrow{display:flex; align-items:center; flex-wrap:wrap; gap:9px; margin-top:11px; font-size:17px}
   .peakrow .t{color:var(--go); font-weight:700}
   .peakrow .pct{color:var(--muted); font-variant-numeric:tabular-nums; font-size:16px}
@@ -176,6 +179,12 @@
 
 <section class="card">
   <p class="label">Upcoming windows at your spot</p>
+  <p class="note legend">
+    <b>&#9733; peak</b> the hour fish are thickest &middot;
+    <b>best</b> top hour in that window when there's no clear peak &middot;
+    <b>big tide</b> 16&nbsp;ft or more at the mouth &middot;
+    <b>now</b> window is open
+  </p>
   <div id="timeline"><div class="note">Loading&hellip;</div></div>
   <div id="tideFallback" style="display:none">
     <hr class="soft">
@@ -416,10 +425,22 @@ function relAt(ms){var c=CURVE||curveData();return c.mx?intensityAt(ms)/c.mx:0;}
 // a 16 hr window and tides 12.4 hrs apart the waves merge, so several tides can
 // share one real maximum and the small ones produce none. Returns the strongest
 // genuine local maximum inside this window, or null if the window has none.
+// Consecutive windows overlap (16 hr window, tides 12.4 hrs apart), so a peak
+// can fall inside two of them. Claim it only for the window whose arrival centre
+// sits closest, otherwise the same time gets starred on two adjacent rows.
 function windowPeak(w){
   var c=CURVE||curveData();
-  return c.peaks.filter(function(p){return p.t>=+w.arrStart&&p.t<=+w.arrEnd;})
-                .sort(function(a,b){return b.i-a.i;})[0]||null;
+  var inside=c.peaks.filter(function(p){return p.t>=+w.arrStart&&p.t<=+w.arrEnd;});
+  if(!inside.length)return null;
+  var wins=buildWindows();
+  var hit=inside.sort(function(a,b){return b.i-a.i;})[0];
+  var nearest=wins.reduce(function(best,x){
+    var d=Math.abs(+x.peak-hit.t);
+    return (!best||d<best.d)?{ht:+x.ht,d:d}:best;
+  },null);
+  // compare by tide timestamp: buildWindows() returns fresh objects each call,
+  // so object identity would never match and every peak would be suppressed.
+  return (nearest&&nearest.ht!==+w.ht)?null:hit;
 }
 // For a window with no local maximum, the wave centre is just the arithmetic
 // middle of the range already printed below it, which tells you nothing. The
@@ -464,6 +485,10 @@ function renderBest(){
   var fs=fishScale();
   var peaks=cd.future.slice().sort(function(a,b){return b.r-a.r;}).slice(0,3)
               .sort(function(a,b){return a.t-b.t;});
+  // The curve is normalised over 72 hrs including 24 hrs of history, so if the
+  // biggest arrival already happened no future peak reaches 1.0 and nothing gets
+  // starred. Star the strongest peak actually listed instead.
+  var bestShown=peaks.reduce(function(m,p){return Math.max(m,p.r);},0);
   var firstFuture=-1;
   pts.forEach(function(p,i){ if(firstFuture<0&&!p.past) firstFuture=i; });
   var bars=pts.map(function(p,i){
@@ -495,13 +520,18 @@ function renderBest(){
     '<div class="ticks">'+ticks+'</div>'+
     peaks.map(function(p){
       var d=new Date(p.t);
-      var top=(p.r>=0.999);
+      var top=(bestShown>0&&p.r>=bestShown-1e-9);
       var hrsAway=(p.t-Date.now())/3600e3;
       var away=hrsAway<1?"in "+Math.max(1,Math.round(hrsAway*60))+"m":"in "+Math.round(hrsAway)+"h";
+      // 12:00 AM is the START of a day. "Tmrw 12:00 AM" reads to most people as
+      // tomorrow night, when it is actually tonight; spell it out.
+      var mn=(d.getHours()===0)?'<span class="n">midnight</span>':
+             (d.getHours()===12&&d.getMinutes()===0)?'<span class="n">noon</span>':"";
       return '<div class="peakrow'+(top?" top":"")+'">'+(top?'<span class="star">\u2605</span>':"")+
-        '<span class="t num">'+dayName(d)+" "+clock(d)+'</span>'+
+        '<span class="t num">'+dayName(d)+" "+clock(d)+'</span>'+mn+
         '<span class="away">'+away+'</span>'+
         '<span class="pct">'+(fs?"~"+fishFmt(fs.perHrAt(p.r))+" fish/hr":Math.round(p.r*100)+"%")+'</span>'+
+        (top?'<span class="n">biggest of the next 48 hrs</span>':"")+
         '</div>';
     }).join("")+
     (fs
