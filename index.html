@@ -120,7 +120,14 @@
   .strip i.db{box-shadow:-2px 0 0 var(--muted)}
   .strip i.nowbar{box-shadow:-3px 0 0 var(--tide)}
   .nowline .sub2{color:var(--faint); font-size:14px}
-  .ticks{display:flex; font-size:13px; color:var(--muted); margin-top:6px}
+  .ticks{display:flex; font-size:13px; color:var(--muted); margin-top:6px; white-space:nowrap}
+  .striplegend{display:flex; flex-wrap:wrap; gap:14px; margin-top:8px;
+    font-size:12.5px; color:var(--faint)}
+  .striplegend span{display:flex; align-items:center; gap:5px}
+  .striplegend .sw{width:12px; height:12px; border-radius:3px; display:inline-block}
+  .striplegend .sw.past{background:var(--faint)}
+  .striplegend .sw.fut{background:var(--go)}
+  .striplegend .sw.nowline{width:3px; height:14px; border-radius:1px; background:var(--tide)}
   .legend{font-size:13px; line-height:1.7; color:var(--faint);
     border-bottom:1px solid var(--line); padding-bottom:10px; margin:-4px 0 12px}
   .legend b{color:var(--muted); font-weight:700}
@@ -504,10 +511,18 @@ function renderBest(){
   }).join("");
   var ticks="";
   var stepT=narrow?12:16;                     // ~12 hrs between labels either way
+  var prevDay=null;
   for(var k=0;k<pts.length;k+=stepT){
     var d=new Date(pts[k].t);
     var hr=(d.getHours()%12||12)+(d.getHours()<12?"a":"p");
-    ticks+='<span style="flex:'+stepT+'">'+(d.getHours()<6?dayName(d).slice(0,3)+" "+hr:hr)+'</span>';
+    // One short token per label. "Tod 12a" was two words in a narrow flex cell,
+    // so it wrapped and became unreadable. Show the day name on the first tick
+    // of each new day: keying off "before 6am" meant day names never appeared
+    // unless a tick happened to land there.
+    var dayKey=d.toDateString();
+    var lab=(prevDay!==null&&dayKey!==prevDay)?dayName(d).slice(0,3):hr;
+    prevDay=dayKey;
+    ticks+='<span style="flex:'+stepT+'">'+lab+'</span>';
   }
   box.innerHTML=
     (fs
@@ -518,6 +533,11 @@ function renderBest(){
         '<span class="sub2"> \u00b7 add today\u2019s daily count below to see fish/hr</span></div>')+
     '<div class="strip">'+bars+'</div>'+
     '<div class="ticks">'+ticks+'</div>'+
+    '<div class="striplegend">'+
+      '<span><i class="sw past"></i>last 24 hrs</span>'+
+      '<span><i class="sw nowline"></i>now</span>'+
+      '<span><i class="sw fut"></i>next 48 hrs</span>'+
+    '</div>'+
     peaks.map(function(p){
       var d=new Date(p.t);
       var top=(bestShown>0&&p.r>=bestShown-1e-9);
