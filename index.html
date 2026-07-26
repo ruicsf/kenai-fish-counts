@@ -64,6 +64,8 @@
   .leg.secondary .n{font-size:12px}
   .dot.tide{background:var(--tide)} .dot.watch{background:var(--watch)} .dot.go{background:var(--go)}
   .leg.arr .t{color:var(--go)}
+  .leg.arr.ispeak .t{color:var(--go); font-weight:800}
+  .leg.arr:not(.ispeak) .t{color:#c9705f; font-weight:600}
   .leg .str{font-size:12.5px; color:var(--muted); font-variant-numeric:tabular-nums;
     border:1px solid var(--line); border-radius:999px; padding:1px 8px}
   .leg .str.hi{color:var(--go); border-color:rgba(224,72,58,.45); background:rgba(224,72,58,.10); font-weight:700}
@@ -412,14 +414,24 @@ function findPeaks(pts){
 function relAt(ms){var c=CURVE||curveData();return c.mx?intensityAt(ms)/c.mx:0;}
 // A tide's wave centre is NOT necessarily a peak in what actually arrives. With
 // a 16 hr window and tides 12.4 hrs apart the waves merge, so several tides can
-// share one real maximum and the small ones produce none. Only label a window
-// with a peak when an actual local maximum of the summed curve falls inside it.
-function peakChip(w){
+// share one real maximum and the small ones produce none. Returns the strongest
+// genuine local maximum inside this window, or null if the window has none.
+function windowPeak(w){
   var c=CURVE||curveData();
-  var hit=c.peaks.filter(function(p){return p.t>=+w.arrStart&&p.t<=+w.arrEnd;})
-                 .sort(function(a,b){return b.i-a.i;})[0];
-  if(!hit)return"";
-  return '<span class="chip pk">\u2605 peak '+clock(new Date(hit.t))+'</span>';
+  return c.peaks.filter(function(p){return p.t>=+w.arrStart&&p.t<=+w.arrEnd;})
+                .sort(function(a,b){return b.i-a.i;})[0]||null;
+}
+// For a window with no local maximum, the wave centre is just the arithmetic
+// middle of the range already printed below it, which tells you nothing. The
+// useful number is where the curve is actually highest inside the window: on a
+// rising stretch that lands near the end, so it says "fish this one late".
+function bestInWindow(w){
+  var best=null;
+  for(var t=+w.arrStart;t<=+w.arrEnd;t+=15*60000){
+    var v=intensityAt(t);
+    if(!best||v>best.v) best={t:t,v:v};
+  }
+  return best?new Date(best.t):w.peak;
 }
 function strengthLabel(ms){
   var r=relAt(ms), fs=fishScale();
@@ -538,15 +550,22 @@ function renderTimeline(wins,open){
   wins.slice(0,5).forEach(function(w){
     var div=document.createElement("div"); div.className="win";
     var isOpen=open&&w===open;
+    // One time per row. If a genuine curve maximum falls inside this window that
+    // is the number worth acting on; otherwise fall back to the wave centre and
+    // say so. Showing both was redundant, and the ~30 min gap between them read
+    // as a contradiction.
+    var hit=windowPeak(w);
+    var mark=hit?new Date(hit.t):bestInWindow(w);
+    var lbl=hit?'\u2605 peak ':'best ';
     div.innerHTML=
       '<div class="day">'+dayName(w.arrStart)+'<span class="d2 num">'+w.arrStart.getDate()+'</span></div>'+
       '<div>'+
         '<div class="leg secondary"><span class="dot tide"></span><span class="t num">'+clock(w.ht)+dtag(w.ht,w.arrStart)+'</span><span class="n">high tide, mouth'+(w.htV!=null?" \u00b7 "+w.htV.toFixed(1)+" ft":"")+'</span>'+(w.htBig?'<span class="chip big">big tide</span>':"")+'</div>'+
         '<div class="leg secondary"><span class="dot watch"></span><span class="t num">'+rangeDays(w.sonarStart,w.sonarEnd,w.arrStart)+'</span><span class="n">crosses RM 19 sonar</span></div>'+
-        '<div class="leg arr"><span class="dot go"></span><span class="t num">mid '+clock(w.peak)+dtag(w.peak,w.arrStart)+'</span>'+
-        '<span class="str'+(relAt(+w.peak)>=0.7?" hi":"")+'">'+strengthLabel(+w.peak)+'</span>'+
+        '<div class="leg arr'+(hit?" ispeak":"")+'"><span class="dot go"></span><span class="t num">'+lbl+clock(mark)+dtag(mark,w.arrStart)+'</span>'+
+        '<span class="str'+(relAt(+mark)>=0.7?" hi":"")+'">'+strengthLabel(+mark)+'</span>'+
         '<span class="n">window '+rangeDays(w.arrStart,w.arrEnd,w.arrStart)+'</span>'+
-        peakChip(w)+(isOpen?'<span class="chip fit" style="background:rgba(224,72,58,.15);border-color:rgba(224,72,58,.4);color:var(--go)">now</span>':'')+'</div>'+
+        (isOpen?'<span class="chip fit" style="background:rgba(224,72,58,.15);border-color:rgba(224,72,58,.4);color:var(--go)">now</span>':'')+'</div>'+
       '</div>';
     el.appendChild(div);
   });
