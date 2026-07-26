@@ -114,6 +114,7 @@
   .nowline b{color:var(--text); font-size:18px}
   .strip{display:flex; align-items:flex-end; gap:1px; height:64px}
   .strip i{flex:1 1 0; min-width:0; background:var(--go); border-radius:1px}
+  .strip i.past{background:var(--faint)}
   .strip i.db{box-shadow:-2px 0 0 var(--muted)}
   .strip i.nowbar{box-shadow:-3px 0 0 var(--tide)}
   .nowline .sub2{color:var(--faint); font-size:14px}
@@ -121,6 +122,8 @@
   .peakrow{display:flex; align-items:center; flex-wrap:wrap; gap:9px; margin-top:11px; font-size:17px}
   .peakrow .t{color:var(--go); font-weight:700}
   .peakrow .pct{color:var(--muted); font-variant-numeric:tabular-nums; font-size:16px}
+  .peakrow .away{color:var(--faint); font-size:13px; font-variant-numeric:tabular-nums;
+    border:1px solid var(--line); border-radius:999px; padding:1px 8px}
   .peakrow.top{background:rgba(224,72,58,.10); border:1px solid rgba(224,72,58,.32);
     border-radius:10px; padding:8px 10px; margin-top:10px}
   .peakrow.top .t{font-size:19px}
@@ -164,7 +167,7 @@
 </section>
 
 <section class="card" id="best">
-  <p class="label">Best bets &middot; next 48 hrs</p>
+  <p class="label">Best bets &middot; last 24 &amp; next 48 hrs</p>
   <div class="note" id="sonarDayNote" style="margin-bottom:10px"></div>
   <div id="bestBody"><div class="note">Building&hellip;</div></div>
 </section>
@@ -247,6 +250,10 @@ var HIST_YEARS=[2025,2024,2023,2022];
 var SPOT_RM=47;          // your holes, miles from the mouth
 var SONAR_RM=19;         // ADF&G DIDSON sonar
 var SONAR_FRAC=SONAR_RM/SPOT_RM;
+// "Big tide" was relative to the average of whatever tides happened to be in the
+// fetch window, so the same tide gained or lost the badge as the window slid.
+// Absolute threshold instead: stable, and actually means "pushes a lot of water".
+var BIG_TIDE_FT=16.0;
 
 var DEFAULTS={
   station:"9455742",
@@ -279,10 +286,8 @@ var HIGH_TIDES=[];
 function buildWindows(){
   var lagLo=S.lagLo, lagHi=S.lagHi;
   var now=new Date();
-  var hs=HIGH_TIDES.filter(function(x){return x.v!=null;}).map(function(x){return x.v;});
-  var avg=hs.length?hs.reduce(function(a,b){return a+b;},0)/hs.length:null;
   return HIGH_TIDES.map(function(x){var ht=x.t;return {
-    ht:ht, htV:x.v, htBig:(avg!=null&&x.v!=null&&x.v>=avg+0.4),
+    ht:ht, htV:x.v, htBig:(x.v!=null&&x.v>=BIG_TIDE_FT),
     peak:new Date(+ht+(lagLo+lagHi)/2*MS_H),
     sonarStart:new Date(+ht+lagLo*SONAR_FRAC*MS_H),
     sonarEnd:new Date(+ht+lagHi*SONAR_FRAC*MS_H),
@@ -305,7 +310,7 @@ function renderHero(){
     document.getElementById("heroBig").textContent="\u2014";
     document.getElementById("heroRange").textContent="";
     document.getElementById("heroMeta").textContent="Load a high tide below to compute your windows.";
-    document.getElementById("heroCheck").textContent=""; heroCountdownTarget=null; return;
+    heroCountdownTarget=null; renderBest(); return;
   }
   var open=wins.filter(function(w){return w.arrStart<=now && now<=w.arrEnd;})[0];
   var next=wins.filter(function(w){return w.arrStart>now;})[0];
@@ -362,26 +367,41 @@ function intensityAt(ms){
     return a+w*Math.exp(-dh*dh/(2*sig*sig));
   },0);
 }
-function buildCurve(hours,stepMin){
-  var now=Date.now(),pts=[];
-  for(var m=0;m<hours*60;m+=stepMin){var t=now+m*60000;pts.push({t:t,i:intensityAt(t)});}
+var BACK_HRS=24, FWD_HRS=48;
+function buildCurve(backHours,fwdHours,stepMin){
+  var now=Date.now(),pts=[],nowIdx=0;
+  // Snap the grid to absolute time boundaries. Anchoring it to `now` made the
+  // samples slide as the clock advanced, so the detected peak wobbled by a few
+  // minutes on every re-render.
+  var step=stepMin*60000;
+  var start=Math.floor((now-backHours*3600e3)/step)*step;
+  var end=now+fwdHours*3600e3;
+  for(var t=start;t<=end;t+=step){
+    if(t<=now) nowIdx=pts.length;          // last sample at or before now
+    pts.push({t:t,i:intensityAt(t),past:t<now});
+  }
   var mx=Math.max.apply(null,pts.map(function(p){return p.i;}))||1;
   pts.forEach(function(p){p.r=p.i/mx;});
-  pts.mx=mx;
+  pts.mx=mx; pts.nowIdx=nowIdx;
   return pts;
 }
 var CURVE=null;
 function curveData(){
-  var fine=buildCurve(48,15);                 // 15-min resolution, one source of truth
+  var fine=buildCurve(BACK_HRS,FWD_HRS,15);   // 15-min resolution, one source of truth
   var peaks=findPeaks(fine).sort(function(a,b){return a.t-b.t;});
-  CURVE={fine:fine,peaks:peaks,mx:fine.mx||1,nowR:fine.length?fine[0].r:0};
+  var now=Date.now();
+  CURVE={fine:fine, peaks:peaks,
+         future:peaks.filter(function(p){return p.t>=now;}),
+         mx:fine.mx||1, nowIdx:fine.nowIdx||0,
+         nowR:fine.length?fine[fine.nowIdx||0].r:0};
   return CURVE;
 }
 function findPeaks(pts){
   var out=[];
-  // A peak already in progress declines from the first sample, so it has no
-  // rising left neighbour and the scan below would miss it entirely.
-  if(pts.length>1&&pts[0].i>=pts[1].i&&pts[0].r>0.3) out.push(pts[0]);
+  // No boundary special-case. The curve starts BACK_HRS before now, so a peak
+  // in progress has real samples either side and the normal scan finds it.
+  // Treating index 0 as a peak whenever the curve was declining there invented
+  // a fresh "peak" at the current time on every single render.
   for(var k=1;k<pts.length-1;k++)
     if(pts[k].i>pts[k-1].i&&pts[k].i>=pts[k+1].i&&pts[k].r>0.3) out.push(pts[k]);
   return out.sort(function(a,b){return b.i-a.i;});
@@ -412,24 +432,31 @@ function renderBest(){
   var narrow=window.innerWidth<430;
   var cd=CURVE||curveData();
   var nowR=cd.nowR;
-  var every=narrow?4:2;                       // 60 or 30 min bars, same underlying curve
+  // 72 hrs of curve now, so coarser bars than before or they get too thin to read.
+  var every=narrow?4:3;                       // 60 or 45 min bars, same underlying curve
   var pts=cd.fine.filter(function(_,i){return i%every===0;});
   var fs=fishScale();
-  var peaks=cd.peaks.slice().sort(function(a,b){return b.r-a.r;}).slice(0,3)
+  var peaks=cd.future.slice().sort(function(a,b){return b.r-a.r;}).slice(0,3)
               .sort(function(a,b){return a.t-b.t;});
+  var firstFuture=-1;
+  pts.forEach(function(p,i){ if(firstFuture<0&&!p.past) firstFuture=i; });
   var bars=pts.map(function(p,i){
     var d=new Date(p.t);
     var h=Math.max(4,Math.round(p.r*60));
     var op=(0.32+p.r*0.68).toFixed(2);
     var prev=i?new Date(pts[i-1].t):null;
-    var mid=(prev&&d.getDate()!==prev.getDate())?" db":"";   // midnight divider
-    return '<i class="'+(i===0?"nowbar":"")+mid+'" style="height:'+h+'px;opacity:'+op+'"></i>';
+    var cls=[];
+    if(p.past) cls.push("past");
+    if(i===firstFuture) cls.push("nowbar");
+    if(prev&&d.getDate()!==prev.getDate()) cls.push("db");   // midnight divider
+    return '<i class="'+cls.join(" ")+'" style="height:'+h+'px;opacity:'+op+'"></i>';
   }).join("");
   var ticks="";
-  for(var k=0;k<pts.length;k+=(narrow?6:12)){
+  var stepT=narrow?12:16;                     // ~12 hrs between labels either way
+  for(var k=0;k<pts.length;k+=stepT){
     var d=new Date(pts[k].t);
     var hr=(d.getHours()%12||12)+(d.getHours()<12?"a":"p");
-    ticks+='<span style="flex:12">'+(k===0?"now":(d.getHours()<6?dayName(d).slice(0,3)+" "+hr:hr))+'</span>';
+    ticks+='<span style="flex:'+stepT+'">'+(d.getHours()<6?dayName(d).slice(0,3)+" "+hr:hr)+'</span>';
   }
   box.innerHTML=
     (fs
@@ -443,8 +470,11 @@ function renderBest(){
     peaks.map(function(p){
       var d=new Date(p.t);
       var top=(p.r>=0.999);
+      var hrsAway=(p.t-Date.now())/3600e3;
+      var away=hrsAway<1?"in "+Math.max(1,Math.round(hrsAway*60))+"m":"in "+Math.round(hrsAway)+"h";
       return '<div class="peakrow'+(top?" top":"")+'">'+(top?'<span class="star">\u2605</span>':"")+
         '<span class="t num">'+dayName(d)+" "+clock(d)+'</span>'+
+        '<span class="away">'+away+'</span>'+
         '<span class="pct">'+(fs?"~"+fishFmt(fs.perHrAt(p.r))+" fish/hr":Math.round(p.r*100)+"%")+'</span>'+
         '</div>';
     }).join("")+
