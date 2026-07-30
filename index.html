@@ -711,14 +711,15 @@ function loadTides(){
   });
 }
 
-// Paste your Cloudflare Worker URL here to make counts load automatically.
-// Leave "" to fall back to the manual entry box.
-var PROXY="";
+// Val Town HTTP val that reads the ADF&G results page. See worker.js / valtown.js.
+var PROXY="https://ruifernandes--748f73888bea11f1bd241607ee4eb77e.web.val.run";
 
-function adfgURL(y){
-  if(PROXY) return PROXY.replace(/\/$/,"")+"/?year="+y;
-  return "https://www.adfg.alaska.gov/sf/FishCounts/index.cfm?ADFG=export.JSON&countLocationID=40&speciesID=420&year="+y;
-}
+// Direct fetch is not an option. ADF&G does not send an Access-Control header,
+// so the browser discards the response, and their JSON export contains no
+// current-year rows anyway (checked 2026-07-29: only 2025 back to 2022). The
+// worker reads their HTML results page instead. Without PROXY set, counts are
+// entered by hand.
+function adfgURL(y){ return PROXY.replace(/\/$/,"")+"/?year="+y; }
 var ADFG_PAGE="https://www.adfg.alaska.gov/sf/FishCounts/index.cfm?ADFG=main.displayResults&COUNTLOCATIONID=40&SPECIESID=420&YEAR="+(new Date().getFullYear());
 
 function histCumOn(idx){var out={};HIST_YEARS.forEach(function(y){var a=HIST[y],s=0;for(var i=0;i<=idx&&i<a.length;i++)s+=a[i];out[y]=s;});return out;}
@@ -788,20 +789,19 @@ function showSonarForm(){
   };
 }
 function loadSonar(){
-  var yr=new Date().getFullYear();
-  fetch(adfgURL(yr)).then(function(r){return r.text();}).then(function(txt){
-    var j=JSON.parse(txt);
-    var rows=(j.DATA||[]).filter(function(r){return r[0]===yr;});
-    if(!rows.length) throw new Error("no rows yet");
-    var cum=0,lastDaily=null,lastDate=null;
-    rows.forEach(function(r){var d=new Date(r[1]);if(isNaN(d))return;cum+=(+r[2]||0);lastDaily=(+r[2]||0);lastDate=d;});
-    if(!lastDate) throw new Error("no dated rows");
-    renderSonar(cum,lastDaily,lastDate,true);
-  }).catch(function(){
+  function manual(){
     var saved=loadJSON("kenai_sonar_v1",null);
-    if(saved){renderSonar(saved.cumulative,saved.daily,new Date(saved.date+"T12:00:00"),false);}
+    if(saved) renderSonar(saved.cumulative,saved.daily,new Date(saved.date+"T12:00:00"),false);
     else showSonarForm();
-  });
+  }
+  if(!PROXY){ manual(); return; }
+  fetch(adfgURL(new Date().getFullYear())).then(function(r){return r.json();}).then(function(j){
+    if(!j||!j.last||!(j.last.cumulative>0)) throw new Error(j&&j.error?j.error:"no rows");
+    // Cache it, so a later load with no signal still shows the real numbers
+    // instead of dropping back to whatever was typed in weeks ago.
+    saveJSON("kenai_sonar_v1",{date:j.last.date,cumulative:j.last.cumulative,daily:j.last.count});
+    renderSonar(j.last.cumulative,j.last.count,new Date(j.last.date+"T12:00:00"),true);
+  }).catch(manual);
 }
 
 function renderWhy(){
