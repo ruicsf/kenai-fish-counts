@@ -400,8 +400,11 @@ function renderHero(){
     document.getElementById("heroRange").innerHTML='in <span id="cd" class="num"></span> '+strength;
     var fut=cd.fine.filter(function(p){return p.t>=+now&&p.t<=+now+48*3600e3;});
     var shown=function(p){return fsH?fsH.perHrAt(p.r,p.t):p.r;};
-    var bestFut=fut.reduce(function(m,p){return Math.max(m,shown(p));},0);
     var nowShown=fsH?fsH.perHrAt(nowR,+now):nowR;
+    // "now" is evaluated at the exact instant while the samples sit on a snapped
+    // 15-min grid, so on a falling run now can beat every gridded point and the
+    // ratio goes over 100%. Include now in the comparison.
+    var bestFut=fut.reduce(function(m,p){return Math.max(m,shown(p));},nowShown);
     var pctOfBest=bestFut>0?Math.round(nowShown/bestFut*100):0;
     document.getElementById("heroMeta").innerHTML='Right now you\u2019re at <b>'+pctOfBest+
       '%</b> of the best arrival in the next 48 hrs. This peak rode the '+clock(src.ht)+
@@ -477,7 +480,9 @@ function flatness(){
   var fs=fishScale();
   var v=n.map(function(p){return fs?fs.perHrAt(p.r,p.t):p.r;});
   var hi=Math.max.apply(null,v), lo=Math.min.apply(null,v);
-  return hi>0?(hi-lo)/hi:0;
+  // hi of 0 means there is no curve at all (no tides loaded). That is not
+  // "perfectly flat", it is no answer, and 0% would read as a real reading.
+  return hi>0?(hi-lo)/hi:null;
 }
 // A tide's wave centre is NOT necessarily a peak in what actually arrives. With
 // a 16 hr window and tides 12.4 hrs apart the waves merge, so several tides can
