@@ -114,8 +114,12 @@
   .gauge .vs{font-size:13px; color:#9fb4b8}
   .nowline{font-size:15px; color:var(--muted); margin-bottom:10px}
   .nowline b{color:var(--text); font-size:18px}
-  .strip{display:flex; align-items:flex-end; gap:1px; height:60px; border-top:1px dashed var(--line)}
+  .strip{display:flex; align-items:flex-end; gap:1px; height:60px; border-top:1px dashed var(--line); border-bottom:1px solid var(--line)}
   .ceil{text-align:right; font-size:11px; color:var(--faint); margin-bottom:2px}
+  .floor{text-align:right; font-size:11px; color:var(--faint); margin-top:2px}
+  .dstrip{display:flex; align-items:flex-end; gap:2px; height:72px; border-bottom:1px solid var(--line)}
+  .dstrip i{flex:1 1 0; min-width:0; background:var(--tide); opacity:.45; border-radius:1px}
+  .dstrip i.last{background:var(--go); opacity:1}
   #hero.flat .state{color:var(--muted)}
   .strip i{flex:1 1 0; min-width:0; background:var(--go); border-radius:1px}
   .strip i.past{background:var(--faint)}
@@ -280,11 +284,6 @@ var SONAR_FRAC=SONAR_RM/SPOT_RM;
 // fetch window, so the same tide gained or lost the badge as the window slid.
 // Absolute threshold instead: stable, and actually means "pushes a lot of water".
 var BIG_TIDE_FT=16.0;
-// Bars used to be scaled to the tallest bar in view, so the tallest bar was
-// always full height and a dead day drew the same picture as a monster day.
-// Fixed ceiling instead: height means fish. Worst case the app can print is a
-// record 250k day with very lopsided tides, about 15,700/hr, so 16,000 clears it.
-var CHART_MAX=16000;
 // At RM 47 the 16 hr lag window smears tides 12.4 hrs apart into each other, so
 // most days the best hour beats the worst by only a few percent. Naming a "peak"
 // then promises a decision the model cannot support.
@@ -550,12 +549,18 @@ function renderBest(){
   var bestShown=peaks.reduce(function(m,p){return Math.max(m,p.r);},0);
   var firstFuture=-1;
   pts.forEach(function(p,i){ if(firstFuture<0&&!p.past) firstFuture=i; });
+  // Zoom the axis to what is actually happening, so building / peaking / fading
+  // is visible. A fixed ceiling flattened every normal day into a stripe. The
+  // top and bottom values are printed either side of the strip, so a small
+  // wiggle reads as a small wiggle instead of looking like terrain.
+  var vals=pts.map(function(p){return fs?fs.perHrAt(p.r):p.r;});
+  var yLo=Math.min.apply(null,vals), yHi=Math.max.apply(null,vals);
+  var span=(yHi-yLo)||1;
   var bars=pts.map(function(p,i){
     var d=new Date(p.t);
-    // Absolute scale when a count is available. Without one there is no fish/hr
-    // to draw against, so fall back to the old relative shape.
-    var frac=fs?Math.min(fs.perHrAt(p.r)/CHART_MAX,1):p.r;
-    var h=Math.max(3,Math.round(frac*60));
+    // Lowest bar keeps 6px so the strip stays readable as a continuous shape.
+    var frac=((fs?fs.perHrAt(p.r):p.r)-yLo)/span;
+    var h=Math.round(6+frac*54);
     var op=(0.40+frac*0.60).toFixed(2);
     var prev=i?new Date(pts[i-1].t):null;
     var cls=[];
@@ -586,8 +591,9 @@ function renderBest(){
         (fs.date.getMonth()+1)+'/'+fs.date.getDate()+', spread by tide timing</span></div>'
       : '<div class="nowline">Right now: <b>'+Math.round(nowR*100)+'%</b> on tide timing'+
         '<span class="sub2"> \u00b7 add today\u2019s daily count below to see fish/hr</span></div>')+
-    (fs?'<div class="ceil">'+commas(CHART_MAX)+' fish/hr</div>':"")+
+    (fs?'<div class="ceil">'+fishFmt(yHi)+' fish/hr</div>':"")+
     '<div class="strip">'+bars+'</div>'+
+    (fs?'<div class="floor">'+fishFmt(yLo)+' fish/hr</div>':"")+
     '<div class="ticks">'+ticks+'</div>'+
     '<div class="striplegend">'+
       '<span><i class="sw past"></i>last 24 hrs</span>'+
@@ -738,6 +744,26 @@ function paceVerdict(cum2026,idx){
   return {avg:avg,h:h,text:"You're "+word+"."+peakNote};
 }
 var LAST_SONAR=null;
+var LAST_ROWS=null;
+// One bar per day at the sonar. This is where the range actually is: the run
+// turned on around 7/24 and has been falling since. Zero-based, because a daily
+// count genuinely starts at zero and the height should mean fish.
+function dailyStrip(rows){
+  if(!rows||rows.length<3)return"";
+  var use=rows.slice(-21);
+  var mx=use.reduce(function(m,r){return Math.max(m,r.count);},0)||1;
+  var bars=use.map(function(r,i){
+    return '<i class="'+(i===use.length-1?"last":"")+
+      '" style="height:'+Math.max(2,Math.round(r.count/mx*72))+'px"></i>';
+  }).join("");
+  function md(d){var p=d.split("-");return (+p[1])+"/"+(+p[2]);}
+  return '<hr class="soft"><p class="label">Daily count, last '+use.length+' days</p>'+
+    '<div class="ceil">'+commas(mx)+' on '+
+      md(use.filter(function(r){return r.count===mx;})[0].date)+'</div>'+
+    '<div class="dstrip">'+bars+'</div>'+
+    '<div class="ticks" style="justify-content:space-between">'+
+      '<span>'+md(use[0].date)+'</span><span>'+md(use[use.length-1].date)+'</span></div>';
+}
 function refreshSonar(){ if(LAST_SONAR)renderSonar(LAST_SONAR.c,LAST_SONAR.d,LAST_SONAR.o,LAST_SONAR.l); }
 function renderSonar(cum2026,daily2026,dateObj,live){
   LAST_SONAR={c:cum2026,d:daily2026,o:dateObj,l:live};
@@ -752,6 +778,7 @@ function renderSonar(cum2026,daily2026,dateObj,live){
     '<div class="bignum num">'+commas(cum2026)+'</div>'+
     '<div class="note">cumulative through '+dstr+(daily2026!=null?' \u00b7 '+commas(daily2026)+' that day':'')+(live?' \u00b7 <span style="color:var(--tide)">live from ADF&G</span>':'')+'</div>'+
     '<div class="verdict">'+v.text+'</div>'+
+    dailyStrip(LAST_ROWS)+
     '<hr class="soft"><p class="label">Cumulative to '+dstr+', by year</p>'+rows+
     '<hr class="soft">'+
     '<a class="btnlink" href="'+ADFG_PAGE+'" target="_blank" rel="noopener">Open ADF&G count page</a> '+
@@ -797,6 +824,7 @@ function loadSonar(){
   if(!PROXY){ manual(); return; }
   fetch(adfgURL(new Date().getFullYear())).then(function(r){return r.json();}).then(function(j){
     if(!j||!j.last||!(j.last.cumulative>0)) throw new Error(j&&j.error?j.error:"no rows");
+    LAST_ROWS=j.rows||null;
     // Cache it, so a later load with no signal still shows the real numbers
     // instead of dropping back to whatever was typed in weeks ago.
     saveJSON("kenai_sonar_v1",{date:j.last.date,cumulative:j.last.cumulative,daily:j.last.count});
