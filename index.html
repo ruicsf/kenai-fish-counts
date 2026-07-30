@@ -360,7 +360,7 @@ function renderHero(){
     hero.className="card flat";
     document.getElementById("heroState").textContent="Timing flat \u00b7 next 24 hrs";
     document.getElementById("heroBig").textContent=
-      fsF?"~"+fishFmt(fsF.perHrAt(nowR))+" fish/hr":Math.round(nowR*100)+"%";
+      fsF?"~"+fishFmt(fsF.perHrAt(nowR,Date.now()))+" fish/hr":Math.round(nowR*100)+"%";
     document.getElementById("heroRange").innerHTML="";
     document.getElementById("heroMeta").innerHTML='Best hour beats worst by only <b>'+
       Math.round(spread*100)+'%</b> today, so tide timing is not worth planning around. '+
@@ -382,7 +382,7 @@ function renderHero(){
   var src=wins.slice().sort(function(a,b){return Math.abs(a.peak-show.t)-Math.abs(b.peak-show.t);})[0];
   var fsH=fishScale();
   var strength=(show.r==null)?"":
-    '<span class="chip pk">'+(fsH?"~"+fishFmt(fsH.perHrAt(show.r))+" fish/hr":Math.round(show.r*100)+"% on tide timing")+'</span>';
+    '<span class="chip pk">'+(fsH?"~"+fishFmt(fsH.perHrAt(show.r,show.t))+" fish/hr":Math.round(show.r*100)+"% on tide timing")+'</span>';
 
   if(near){
     hero.className="card go";
@@ -398,7 +398,12 @@ function renderHero(){
     document.getElementById("heroState").textContent="Next peak \u00b7 "+dayName(d);
     document.getElementById("heroBig").textContent=clock(d);
     document.getElementById("heroRange").innerHTML='in <span id="cd" class="num"></span> '+strength;
-    document.getElementById("heroMeta").innerHTML='Right now you\u2019re at <b>'+Math.round(nowR*100)+
+    var fut=cd.fine.filter(function(p){return p.t>=+now&&p.t<=+now+48*3600e3;});
+    var shown=function(p){return fsH?fsH.perHrAt(p.r,p.t):p.r;};
+    var bestFut=fut.reduce(function(m,p){return Math.max(m,shown(p));},0);
+    var nowShown=fsH?fsH.perHrAt(nowR,+now):nowR;
+    var pctOfBest=bestFut>0?Math.round(nowShown/bestFut*100):0;
+    document.getElementById("heroMeta").innerHTML='Right now you\u2019re at <b>'+pctOfBest+
       '%</b> of the best arrival in the next 48 hrs. This peak rode the '+clock(src.ht)+
       (src.htV!=null?" ("+src.htV.toFixed(1)+" ft)":"")+' high tide at the mouth.';
     heroCountdownTarget={el:"cd",time:d};
@@ -461,15 +466,17 @@ function findPeaks(pts){
   return out.sort(function(a,b){return b.i-a.i;});
 }
 function relAt(ms){var c=CURVE||curveData();return c.mx?intensityAt(ms)/c.mx:0;}
-// How much the next 24 hrs actually varies. Returns null if there is not enough
-// curve to judge. Under FLAT_AT the app should stop pretending hour matters.
+// How much the next 24 hrs actually varies, measured on the numbers the chart
+// shows. Reading it off tide shape alone let the note say "within 19%" while
+// the line was falling by a third. Returns null if there is not enough curve.
 function flatness(){
   var c=CURVE||curveData();
   var now=Date.now();
   var n=c.fine.filter(function(p){return p.t>=now&&p.t<=now+24*3600e3;});
   if(n.length<4)return null;
-  var hi=Math.max.apply(null,n.map(function(p){return p.r;}));
-  var lo=Math.min.apply(null,n.map(function(p){return p.r;}));
+  var fs=fishScale();
+  var v=n.map(function(p){return fs?fs.perHrAt(p.r,p.t):p.r;});
+  var hi=Math.max.apply(null,v), lo=Math.min.apply(null,v);
   return hi>0?(hi-lo)/hi:0;
 }
 // A tide's wave centre is NOT necessarily a peak in what actually arrives. With
@@ -512,17 +519,58 @@ function bestInWindow(w){
 }
 function strengthLabel(ms){
   var r=relAt(ms), fs=fishScale();
-  return fs?("~"+fishFmt(fs.perHrAt(r))+" fish/hr"):(Math.round(r*100)+"%");
+  return fs?("~"+fishFmt(fs.perHrAt(r,ms))+" fish/hr"):(Math.round(r*100)+"%");
 }
-// Curve gives the SHAPE of arrivals; the sonar daily count gives the SCALE.
-// mean(r) over the window represents an average hour, so D/24 fish land there.
+// Fish reaching the spot at time t crossed the sonar this many hours earlier.
+function sonarBackHrs(){ return lagCenter()*(1-SONAR_FRAC); }
+// How fast the run is changing, per day, from the last four posted counts.
+// Clamped so one freak day cannot send the projection to the moon.
+function trendPerDay(){
+  if(!LAST_ROWS||LAST_ROWS.length<4)return 1;
+  var a=LAST_ROWS[LAST_ROWS.length-4].count, b=LAST_ROWS[LAST_ROWS.length-1].count;
+  if(!(a>0)||!(b>0))return 1;
+  return Math.min(1.35,Math.max(0.65,Math.pow(b/a,1/3)));
+}
+// The daily count for the day those fish crossed. Posted days come straight
+// from ADF&G; days not posted yet follow the trend. Scaling the whole 48 hr
+// forecast by one stale day meant the only thing shaping the line was the
+// tide, so the chart drew the run RISING while it was falling a third a day.
+function countOnDay(c,offset){
+  var d=new Date(c.getFullYear(),c.getMonth(),c.getDate()+offset);
+  var key=d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate());
+  for(var i=LAST_ROWS.length-1;i>=0;i--)
+    if(LAST_ROWS[i].date===key) return LAST_ROWS[i].count;
+  var last=LAST_ROWS[LAST_ROWS.length-1];
+  var days=Math.round((Date.parse(key)-Date.parse(last.date))/86400000);
+  if(!(days>0)) return null;                  // earlier than the record we have
+  return last.count*Math.pow(trendPerDay(),days);
+}
+function dailyRate(ms){
+  var base=LAST_SONAR?LAST_SONAR.d:null;
+  if(ms==null||!LAST_ROWS||!LAST_ROWS.length)return base;
+  var c=new Date(ms-sonarBackHrs()*MS_H);
+  // Treat each daily count as centred on noon and blend between neighbours.
+  // Used as a straight step it drops a third at one arbitrary hour and the
+  // chart shows a cliff, which reads as a bug rather than as a falling run.
+  var h=c.getHours()+c.getMinutes()/60;
+  var off=h<12?-1:0;
+  var w=h<12?(h+12)/24:(h-12)/24;
+  var a=countOnDay(c,off), b=countOnDay(c,off+1);
+  if(a==null&&b==null)return base;
+  if(a==null)return b;
+  if(b==null)return a;
+  return a+(b-a)*w;
+}
+// Curve gives the SHAPE of arrivals within a day; the sonar count gives the
+// SCALE for that day. mean(r) represents an average hour.
 function fishScale(){
   if(!LAST_SONAR||LAST_SONAR.d==null||!(LAST_SONAR.d>0))return null;
   var cd=CURVE||curveData(); if(!cd.fine.length)return null;
   var mean=cd.fine.reduce(function(a,p){return a+p.r;},0)/cd.fine.length;
   if(!(mean>0))return null;
-  return {perHrAt:function(r){return LAST_SONAR.d/24*(r/mean);},
-          daily:LAST_SONAR.d, date:LAST_SONAR.o, live:LAST_SONAR.l};
+  return {perHrAt:function(r,ms){var d=dailyRate(ms); return (d==null?0:d)/24*(r/mean);},
+          daily:LAST_SONAR.d, date:LAST_SONAR.o, live:LAST_SONAR.l,
+          trend:trendPerDay(), projected:!!(LAST_ROWS&&LAST_ROWS.length>=4)};
 }
 function fishFmt(n){
   if(n>=10000)return commas(Math.round(n/100)*100);
@@ -553,13 +601,13 @@ function renderBest(){
   // is visible. A fixed ceiling flattened every normal day into a stripe. The
   // top and bottom values are printed either side of the strip, so a small
   // wiggle reads as a small wiggle instead of looking like terrain.
-  var vals=pts.map(function(p){return fs?fs.perHrAt(p.r):p.r;});
+  var vals=pts.map(function(p){return fs?fs.perHrAt(p.r,p.t):p.r;});
   var yLo=Math.min.apply(null,vals), yHi=Math.max.apply(null,vals);
   var span=(yHi-yLo)||1;
   var bars=pts.map(function(p,i){
     var d=new Date(p.t);
     // Lowest bar keeps 6px so the strip stays readable as a continuous shape.
-    var frac=((fs?fs.perHrAt(p.r):p.r)-yLo)/span;
+    var frac=((fs?fs.perHrAt(p.r,p.t):p.r)-yLo)/span;
     var h=Math.round(6+frac*54);
     var op=(0.40+frac*0.60).toFixed(2);
     var prev=i?new Date(pts[i-1].t):null;
@@ -586,7 +634,7 @@ function renderBest(){
   }
   box.innerHTML=
     (fs
-      ? '<div class="nowline">Right now: <b>~'+fishFmt(fs.perHrAt(nowR))+' fish/hr</b> reaching your spot'+
+      ? '<div class="nowline">Right now: <b>~'+fishFmt(fs.perHrAt(nowR,Date.now()))+' fish/hr</b> reaching your spot'+
         '<span class="sub2"> \u00b7 '+commas(fs.daily)+'/day at the sonar on '+
         (fs.date.getMonth()+1)+'/'+fs.date.getDate()+', spread by tide timing</span></div>'
       : '<div class="nowline">Right now: <b>'+Math.round(nowR*100)+'%</b> on tide timing'+
@@ -616,16 +664,20 @@ function renderBest(){
       return '<div class="peakrow'+(top?" top":"")+'">'+(top?'<span class="star">\u2605</span>':"")+
         '<span class="t num">'+dayName(d)+" "+clock(d)+'</span>'+mn+
         '<span class="away">'+away+'</span>'+
-        '<span class="pct">'+(fs?"~"+fishFmt(fs.perHrAt(p.r))+" fish/hr":Math.round(p.r*100)+"%")+'</span>'+
+        '<span class="pct">'+(fs?"~"+fishFmt(fs.perHrAt(p.r,p.t))+" fish/hr":Math.round(p.r*100)+"%")+'</span>'+
         (top?'<span class="n">biggest of the next 48 hrs</span>':"")+
         '</div>';
     }).join("")+
     (fs
-      ? '<div class="note" style="margin-top:10px"><b>Rough numbers.</b> The '+commas(fs.daily)+
-        ' fish counted at RM 19 spread across the hours by tide timing, then carried up to you. '+
-        'Assumes the run holds at that rate'+(fs.live?"":" (from the count you entered)")+
-        '. Sport harvest below you thins it, and these fish are spread across the whole river, not all in casting range. '+
-        'Treat it as ballpark, not a headcount.</div>'
+      ? '<div class="note" style="margin-top:10px"><b>Rough numbers.</b> Each hour is scaled by '+
+        'the sonar count for the day those fish crossed RM 19, then carried up to you. '+
+        (fs.projected&&Math.abs(fs.trend-1)>0.03
+          ? 'Days ADF&G has not posted yet are projected at <b>'+
+            (fs.trend<1?"-":"+")+Math.round(Math.abs(fs.trend-1)*100)+'% a day</b>, '+
+            'following the last four counts. '
+          : '')+
+        'Sport harvest below you thins it, and these fish are spread across the whole river, '+
+        'not all in casting range. Treat it as ballpark, not a headcount.</div>'
       : '<div class="note" style="margin-top:10px"><b>Tide timing only.</b> Built from high tide times, tide heights, and your '+
         S.lagLo+'\u2013'+S.lagHi+' hr lag. Enter a daily sonar count in Run strength and this becomes fish/hr.</div>');
 }
