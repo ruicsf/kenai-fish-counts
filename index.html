@@ -114,7 +114,9 @@
   .gauge .vs{font-size:13px; color:#9fb4b8}
   .nowline{font-size:15px; color:var(--muted); margin-bottom:10px}
   .nowline b{color:var(--text); font-size:18px}
-  .strip{display:flex; align-items:flex-end; gap:1px; height:64px}
+  .strip{display:flex; align-items:flex-end; gap:1px; height:60px; border-top:1px dashed var(--line)}
+  .ceil{text-align:right; font-size:11px; color:var(--faint); margin-bottom:2px}
+  #hero.flat .state{color:var(--muted)}
   .strip i{flex:1 1 0; min-width:0; background:var(--go); border-radius:1px}
   .strip i.past{background:var(--faint)}
   .strip i.db{box-shadow:-2px 0 0 var(--muted)}
@@ -278,6 +280,15 @@ var SONAR_FRAC=SONAR_RM/SPOT_RM;
 // fetch window, so the same tide gained or lost the badge as the window slid.
 // Absolute threshold instead: stable, and actually means "pushes a lot of water".
 var BIG_TIDE_FT=16.0;
+// Bars used to be scaled to the tallest bar in view, so the tallest bar was
+// always full height and a dead day drew the same picture as a monster day.
+// Fixed ceiling instead: height means fish. Worst case the app can print is a
+// record 250k day with very lopsided tides, about 15,700/hr, so 16,000 clears it.
+var CHART_MAX=16000;
+// At RM 47 the 16 hr lag window smears tides 12.4 hrs apart into each other, so
+// most days the best hour beats the worst by only a few percent. Naming a "peak"
+// then promises a decision the model cannot support.
+var FLAT_AT=0.20;
 
 var DEFAULTS={
   station:"9455742",
@@ -343,6 +354,23 @@ function renderHero(){
   // The peak is the headline: where overlapping waves stack highest.
   var cd=curveData();
   var nowR=cd.nowR;
+  // Flat day: no peak worth naming. Say so and get out before peak detection.
+  var spread=flatness();
+  if(spread!=null&&spread<FLAT_AT){
+    var fsF=fishScale();
+    hero.className="card flat";
+    document.getElementById("heroState").textContent="Timing flat \u00b7 next 24 hrs";
+    document.getElementById("heroBig").textContent=
+      fsF?"~"+fishFmt(fsF.perHrAt(nowR))+" fish/hr":Math.round(nowR*100)+"%";
+    document.getElementById("heroRange").innerHTML="";
+    document.getElementById("heroMeta").innerHTML='Best hour beats worst by only <b>'+
+      Math.round(spread*100)+'%</b> today, so tide timing is not worth planning around. '+
+      'Fish when you can. '+
+      (fsF?'What matters is the run: '+commas(fsF.daily)+'/day at the sonar.'
+         :'Add a sonar count in Run strength to see fish/hr.');
+    heroCountdownTarget=null;
+    renderTimeline(wins,open); renderBest(); return;
+  }
   var pk=cd.peaks.slice();
   if(!pk.length) pk=wins.map(function(w){return {t:+w.peak,r:null};})
                        .filter(function(x){return x.t>+now-45*60000;});
@@ -434,6 +462,17 @@ function findPeaks(pts){
   return out.sort(function(a,b){return b.i-a.i;});
 }
 function relAt(ms){var c=CURVE||curveData();return c.mx?intensityAt(ms)/c.mx:0;}
+// How much the next 24 hrs actually varies. Returns null if there is not enough
+// curve to judge. Under FLAT_AT the app should stop pretending hour matters.
+function flatness(){
+  var c=CURVE||curveData();
+  var now=Date.now();
+  var n=c.fine.filter(function(p){return p.t>=now&&p.t<=now+24*3600e3;});
+  if(n.length<4)return null;
+  var hi=Math.max.apply(null,n.map(function(p){return p.r;}));
+  var lo=Math.min.apply(null,n.map(function(p){return p.r;}));
+  return hi>0?(hi-lo)/hi:0;
+}
 // A tide's wave centre is NOT necessarily a peak in what actually arrives. With
 // a 16 hr window and tides 12.4 hrs apart the waves merge, so several tides can
 // share one real maximum and the small ones produce none. Returns the strongest
@@ -501,6 +540,8 @@ function renderBest(){
   var every=narrow?4:3;                       // 60 or 45 min bars, same underlying curve
   var pts=cd.fine.filter(function(_,i){return i%every===0;});
   var fs=fishScale();
+  var spread=flatness();
+  var flat=(spread!=null&&spread<FLAT_AT);
   var peaks=cd.future.slice().sort(function(a,b){return b.r-a.r;}).slice(0,3)
               .sort(function(a,b){return a.t-b.t;});
   // The curve is normalised over 72 hrs including 24 hrs of history, so if the
@@ -511,8 +552,11 @@ function renderBest(){
   pts.forEach(function(p,i){ if(firstFuture<0&&!p.past) firstFuture=i; });
   var bars=pts.map(function(p,i){
     var d=new Date(p.t);
-    var h=Math.max(4,Math.round(p.r*60));
-    var op=(0.32+p.r*0.68).toFixed(2);
+    // Absolute scale when a count is available. Without one there is no fish/hr
+    // to draw against, so fall back to the old relative shape.
+    var frac=fs?Math.min(fs.perHrAt(p.r)/CHART_MAX,1):p.r;
+    var h=Math.max(3,Math.round(frac*60));
+    var op=(0.40+frac*0.60).toFixed(2);
     var prev=i?new Date(pts[i-1].t):null;
     var cls=[];
     if(p.past) cls.push("past");
@@ -542,6 +586,7 @@ function renderBest(){
         (fs.date.getMonth()+1)+'/'+fs.date.getDate()+', spread by tide timing</span></div>'
       : '<div class="nowline">Right now: <b>'+Math.round(nowR*100)+'%</b> on tide timing'+
         '<span class="sub2"> \u00b7 add today\u2019s daily count below to see fish/hr</span></div>')+
+    (fs?'<div class="ceil">'+commas(CHART_MAX)+' fish/hr</div>':"")+
     '<div class="strip">'+bars+'</div>'+
     '<div class="ticks">'+ticks+'</div>'+
     '<div class="striplegend">'+
@@ -550,9 +595,12 @@ function renderBest(){
       '<span><i class="sw nowline"></i>now</span>'+
       '<span><i class="sw mid"></i>midnight</span>'+
     '</div>'+
+    (flat?'<div class="note" style="margin-top:10px">Top hours below are within '+
+      Math.round(spread*100)+'% of each other, so none is highlighted. '+
+      'Pick whichever suits you.</div>':"")+
     peaks.map(function(p){
       var d=new Date(p.t);
-      var top=(bestShown>0&&p.r>=bestShown-1e-9);
+      var top=(!flat&&bestShown>0&&p.r>=bestShown-1e-9);
       var hrsAway=(p.t-Date.now())/3600e3;
       var away=hrsAway<1?"in "+Math.max(1,Math.round(hrsAway*60))+"m":"in "+Math.round(hrsAway)+"h";
       // 12:00 AM is the START of a day. "Tmrw 12:00 AM" reads to most people as
