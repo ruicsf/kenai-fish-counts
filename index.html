@@ -47,6 +47,11 @@
   #hero .meta{color:var(--muted); font-size:14px; margin-top:10px}
   #hero .checkpoint{margin-top:12px; padding-top:12px; border-top:1px dashed var(--line); font-size:13px; color:var(--muted)}
   #hero .checkpoint b{color:var(--watch); font-weight:700}
+  #hero .nowbox{margin-top:15px; padding-top:13px; border-top:1px solid var(--line)}
+  #hero .nowbox .lbl{font-size:11px; letter-spacing:.16em; text-transform:uppercase;
+    color:var(--muted); font-weight:700}
+  #hero .nowbox .v{font-size:27px; font-weight:800; letter-spacing:-.01em; margin-top:3px}
+  #hero .nowbox .sub{font-size:13px; color:var(--faint); margin-top:4px; line-height:1.45}
   .chip{display:inline-block; font-size:11px; font-weight:700; letter-spacing:.04em; padding:3px 8px; border-radius:999px; margin-left:6px; vertical-align:middle}
   .chip.fit{background:rgba(86,196,181,.14); color:var(--tide); border:1px solid rgba(86,196,181,.35)}
   .pulse{animation:p 2.4s ease-in-out infinite}
@@ -186,10 +191,11 @@
   <div class="big num" id="heroBig">&mdash;</div>
   <div class="range num" id="heroRange"></div>
   <div class="meta" id="heroMeta"></div>
+  <div id="heroNow"></div>
 </section>
 
 <section class="card" id="best">
-  <p class="label">Best bets &middot; last 24 &amp; next 48 hrs</p>
+  <p class="label" id="bestLabel">Best bets</p>
   <div class="note" id="sonarDayNote" style="margin-bottom:10px"></div>
   <div id="bestBody"><div class="note">Building&hellip;</div></div>
 </section>
@@ -197,10 +203,8 @@
 <section class="card">
   <p class="label">Upcoming windows at your spot</p>
   <p class="note legend">
-    <b>&#9733; peak</b> the hour fish are thickest &middot;
-    <b>best</b> no peak in this window, so the top hour in it &middot;
-    <b>&uarr; still building</b> go late, it climbs past the window &middot;
-    <b>&darr; fading</b> go early, you're on the tail &middot;
+    <b>&#9733; peak</b> fish are thickest partway through this window &middot;
+    <b>best</b> the top hour, which falls at one end of the window &middot;
     <b>big tide</b> 16&nbsp;ft or more &middot;
     <b>now</b> window is open
   </p>
@@ -330,8 +334,37 @@ function buildWindows(){
   };}).filter(function(w){return w.arrEnd>now;}).sort(function(a,b){return a.arrStart-b.arrStart;});
 }
 
+function renderWindowLabel(){
+  var el=document.getElementById("bestLabel"); if(!el)return;
+  el.textContent="Best bets \u00b7 last "+BACK_HRS+" & next "+FWD_HRS+" hrs";
+}
 function renderSpot(){
   document.getElementById("spotline").textContent="Fishing Holes \u00b7 RM "+SPOT_RM+", "+SPOT_RM+" mi upstream from the mouth";
+}
+// Below a divider in the hero: what is reaching the spot right now, and the
+// count driving it. The current forecast is the thing most worth seeing first,
+// and the sonar figure is what actually sets the scale of everything else.
+function renderHeroNow(showRate){
+  var el=document.getElementById("heroNow"); if(!el)return;
+  var f=fishScale(), out="";
+  if(showRate){
+    out+='<div class="lbl">Right now</div>'+
+      '<div class="v num">'+
+      (f?"~"+fishFmt(shownAtTime(Date.now()))+" fish/hr"
+        :Math.round(relAt(Date.now())*100)+"% on tide timing")+'</div>';
+  }
+  if(LAST_SONAR&&LAST_SONAR.d!=null){
+    out+='<div class="sub num">'+commas(LAST_SONAR.d)+'/day at the sonar on '+
+      (LAST_SONAR.o.getMonth()+1)+'/'+LAST_SONAR.o.getDate()+
+      (f&&f.projected&&Math.abs(f.trend-1)>0.03
+        ? ' \u00b7 '+(f.trend<1?"falling":"rising")+' '+
+          Math.round(Math.abs(f.trend-1)*100)+'% a day'
+        : '')+
+      (LAST_SONAR.l?'':' \u00b7 entered by hand')+'</div>';
+  }else{
+    out+='<div class="sub">No sonar count yet. Add one in Run strength to see fish/hr.</div>';
+  }
+  el.innerHTML=out?'<div class="nowbox">'+out+'</div>':"";
 }
 var heroCountdownTarget=null;
 function renderHero(){
@@ -344,6 +377,7 @@ function renderHero(){
     document.getElementById("heroBig").textContent="\u2014";
     document.getElementById("heroRange").textContent="";
     document.getElementById("heroMeta").textContent="Load a high tide below to compute your windows.";
+    renderHeroNow(false);
     heroCountdownTarget=null; renderBest(); return;
   }
   var open=wins.filter(function(w){return w.arrStart<=now && now<=w.arrEnd;})[0];
@@ -367,6 +401,7 @@ function renderHero(){
       'Fish when you can. '+
       (fsF?'What matters is the run: '+commas(fsF.daily)+'/day at the sonar.'
          :'Add a sonar count in Run strength to see fish/hr.');
+    renderHeroNow(false);
     heroCountdownTarget=null;
     renderTimeline(wins,open); renderBest(); return;
   }
@@ -376,7 +411,7 @@ function renderHero(){
   var near=pk.filter(function(p){return Math.abs(p.t-now)<=45*60000;})[0];
   var nextPk=pk.filter(function(p){return p.t>+now;})[0];
   var show=near||nextPk;
-  if(!show){ renderTimeline(wins,open); renderBest(); return; }
+  if(!show){ renderHeroNow(true); renderTimeline(wins,open); renderBest(); return; }
   var d=new Date(show.t);
   // which tide drove it
   var src=wins.slice().sort(function(a,b){return Math.abs(a.peak-show.t)-Math.abs(b.peak-show.t);})[0];
@@ -407,10 +442,11 @@ function renderHero(){
     var bestFut=fut.reduce(function(m,p){return Math.max(m,shown(p));},nowShown);
     var pctOfBest=bestFut>0?Math.round(nowShown/bestFut*100):0;
     document.getElementById("heroMeta").innerHTML='Right now you\u2019re at <b>'+pctOfBest+
-      '%</b> of the best arrival in the next 48 hrs. This peak rode the '+clock(src.ht)+
+      '%</b> of the best arrival in the next '+FWD_HRS+' hrs. This peak rode the '+clock(src.ht)+
       (src.htV!=null?" ("+src.htV.toFixed(1)+" ft)":"")+' high tide at the mouth.';
     heroCountdownTarget={el:"cd",time:d};
   }
+  renderHeroNow(true);
   renderTimeline(wins,open);
   renderBest();
 }
@@ -426,7 +462,10 @@ function intensityAt(ms){
     return a+w*Math.exp(-dh*dh/(2*sig*sig));
   },0);
 }
-var BACK_HRS=24, FWD_HRS=48;
+// How much of the curve to draw. Three other things derive from BACK_HRS: the
+// tide fetch window, how many samples become one bar, and the legend text.
+// Change these two numbers and the rest follows.
+var BACK_HRS=48, FWD_HRS=48;
 function buildCurve(backHours,fwdHours,stepMin){
   var now=Date.now(),pts=[],nowIdx=0;
   // Snap the grid to absolute time boundaries. Anchoring it to `now` made the
@@ -484,43 +523,36 @@ function flatness(){
   // "perfectly flat", it is no answer, and 0% would read as a real reading.
   return hi>0?(hi-lo)/hi:null;
 }
-// A tide's wave centre is NOT necessarily a peak in what actually arrives. With
-// a 16 hr window and tides 12.4 hrs apart the waves merge, so several tides can
-// share one real maximum and the small ones produce none. Returns the strongest
-// genuine local maximum inside this window, or null if the window has none.
-// Consecutive windows overlap (16 hr window, tides 12.4 hrs apart), so a peak
-// can fall inside two of them. Claim it only for the window whose arrival centre
-// sits closest, otherwise the same time gets starred on two adjacent rows.
-function windowPeak(w){
-  var c=CURVE||curveData();
-  var inside=c.peaks.filter(function(p){return p.t>=+w.arrStart&&p.t<=+w.arrEnd;});
-  if(!inside.length)return null;
-  var wins=buildWindows();
-  var hit=inside.sort(function(a,b){return b.i-a.i;})[0];
-  var nearest=wins.reduce(function(best,x){
-    var d=Math.abs(+x.peak-hit.t);
-    return (!best||d<best.d)?{ht:+x.ht,d:d}:best;
-  },null);
-  // compare by tide timestamp: buildWindows() returns fresh objects each call,
-  // so object identity would never match and every peak would be suppressed.
-  return (nearest&&nearest.ht!==+w.ht)?null:hit;
+// The number the app actually prints at time t. Labels must be derived from
+// this, not from raw tide shape, or they contradict the figure beside them.
+function shownAtTime(ms){
+  var f=fishScale();
+  return f?f.perHrAt(relAt(ms),ms):relAt(ms);
 }
-// For a window with no local maximum, the wave centre is just the arithmetic
-// middle of the range already printed below it, which tells you nothing. The
-// useful number is where the curve is actually highest inside the window, plus
-// WHICH WAY it is going: best at the end means it is still building toward a
-// peak past the window; best at the start means you are on the fading tail.
-function bestInWindow(w){
+// One number per row: where the forecast is highest inside this window.
+// If that lands in the middle it is a real peak. If it lands on an edge the
+// window merely clipped a rise or a fall, which is an artifact of where the
+// boundary falls, not a fact about fish. That artifact used to be dressed up
+// as "still building" and fired on most rows while the run was falling.
+// Windows overlap (16 hrs wide, tides 12.4 hrs apart) so a maximum can sit
+// inside two of them; claim the star only for the nearer arrival centre.
+function windowBest(w){
   var best=null;
   for(var t=+w.arrStart;t<=+w.arrEnd;t+=15*60000){
-    var v=intensityAt(t);
+    var v=shownAtTime(t);
     if(!best||v>best.v) best={t:t,v:v};
   }
-  if(!best)return {t:w.peak,kind:""};
-  var tol=30*60000;
-  var kind=(Math.abs(best.t-(+w.arrEnd))<tol)?"rising":
-           (Math.abs(best.t-(+w.arrStart))<tol)?"fading":"";
-  return {t:new Date(best.t),kind:kind};
+  if(!best) return {t:w.peak,peak:false};
+  var edge=45*60000;
+  var interior=(best.t>+w.arrStart+edge && best.t<+w.arrEnd-edge);
+  if(interior){
+    var nearest=buildWindows().reduce(function(b,x){
+      var d=Math.abs(+x.peak-best.t);
+      return (!b||d<b.d)?{ht:+x.ht,d:d}:b;
+    },null);
+    if(nearest&&nearest.ht!==+w.ht) interior=false;
+  }
+  return {t:new Date(best.t),peak:interior};
 }
 function strengthLabel(ms){
   var r=relAt(ms), fs=fishScale();
@@ -571,9 +603,15 @@ function dailyRate(ms){
 function fishScale(){
   if(!LAST_SONAR||LAST_SONAR.d==null||!(LAST_SONAR.d>0))return null;
   var cd=CURVE||curveData(); if(!cd.fine.length)return null;
-  var mean=cd.fine.reduce(function(a,p){return a+p.r;},0)/cd.fine.length;
-  if(!(mean>0))return null;
-  return {perHrAt:function(r,ms){var d=dailyRate(ms); return (d==null?0:d)/24*(r/mean);},
+  // Normalise over a fixed 24 hrs centred on now, not over the drawn window.
+  // Averaging across whatever happens to be on screen meant widening the chart
+  // silently changed every fish/hr number printed on it.
+  var t0=Date.now()-12*3600e3, sum=0, n=0;
+  for(var t=t0;t<=t0+24*3600e3;t+=15*60000){ sum+=intensityAt(t); n++; }
+  var meanI=n?sum/n:0;
+  if(!(meanI>0))return null;
+  return {perHrAt:function(r,ms){var d=dailyRate(ms);
+            return (d==null?0:d)/24*(r*cd.mx/meanI);},
           daily:LAST_SONAR.d, date:LAST_SONAR.o, live:LAST_SONAR.l,
           trend:trendPerDay(), projected:!!(LAST_ROWS&&LAST_ROWS.length>=4)};
 }
@@ -588,8 +626,10 @@ function renderBest(){
   var narrow=window.innerWidth<430;
   var cd=CURVE||curveData();
   var nowR=cd.nowR;
-  // 72 hrs of curve now, so coarser bars than before or they get too thin to read.
-  var every=narrow?4:3;                       // 60 or 45 min bars, same underlying curve
+  // Aim for a bar count that stays readable rather than a fixed sample step.
+  // At 96 hrs a fixed step of 4 gave 97 bars, under 4px each on a phone.
+  var target=narrow?72:96;
+  var every=Math.max(1,Math.round(cd.fine.length/target));
   var pts=cd.fine.filter(function(_,i){return i%every===0;});
   var fs=fishScale();
   var spread=flatness();
@@ -623,7 +663,8 @@ function renderBest(){
     return '<i class="'+cls.join(" ")+'" style="height:'+h+'px;opacity:'+op+'"></i>';
   }).join("");
   var ticks="";
-  var stepT=narrow?12:16;                     // ~12 hrs between labels either way
+  // Roughly 12 hrs between labels, whatever the sample step turned out to be.
+  var stepT=Math.max(2,Math.round(12*60/(every*15)));
   var prevDay=null;
   for(var k=0;k<pts.length;k+=stepT){
     var d=new Date(pts[k].t);
@@ -638,19 +679,13 @@ function renderBest(){
     ticks+='<span style="flex:'+stepT+'">'+lab+'</span>';
   }
   box.innerHTML=
-    (fs
-      ? '<div class="nowline">Right now: <b>~'+fishFmt(fs.perHrAt(nowR,Date.now()))+' fish/hr</b> reaching your spot'+
-        '<span class="sub2"> \u00b7 '+commas(fs.daily)+'/day at the sonar on '+
-        (fs.date.getMonth()+1)+'/'+fs.date.getDate()+', spread by tide timing</span></div>'
-      : '<div class="nowline">Right now: <b>'+Math.round(nowR*100)+'%</b> on tide timing'+
-        '<span class="sub2"> \u00b7 add today\u2019s daily count below to see fish/hr</span></div>')+
     (fs?'<div class="ceil">'+fishFmt(yHi)+' fish/hr</div>':"")+
     '<div class="strip">'+bars+'</div>'+
     (fs?'<div class="floor">'+fishFmt(yLo)+' fish/hr</div>':"")+
     '<div class="ticks">'+ticks+'</div>'+
     '<div class="striplegend">'+
-      '<span><i class="sw past"></i>last 24 hrs</span>'+
-      '<span><i class="sw fut"></i>next 48 hrs</span>'+
+      '<span><i class="sw past"></i>last '+BACK_HRS+' hrs</span>'+
+      '<span><i class="sw fut"></i>next '+FWD_HRS+' hrs</span>'+
       '<span><i class="sw nowline"></i>now</span>'+
       '<span><i class="sw mid"></i>midnight</span>'+
     '</div>'+
@@ -670,7 +705,7 @@ function renderBest(){
         '<span class="t num">'+dayName(d)+" "+clock(d)+'</span>'+mn+
         '<span class="away">'+away+'</span>'+
         '<span class="pct">'+(fs?"~"+fishFmt(fs.perHrAt(p.r,p.t))+" fish/hr":Math.round(p.r*100)+"%")+'</span>'+
-        (top?'<span class="n">biggest of the next 48 hrs</span>':"")+
+        (top?'<span class="n">biggest of the next '+FWD_HRS+' hrs</span>':"")+
         '</div>';
     }).join("")+
     (fs
@@ -727,19 +762,16 @@ function renderTimeline(wins,open){
     // is the number worth acting on; otherwise fall back to the wave centre and
     // say so. Showing both was redundant, and the ~30 min gap between them read
     // as a contradiction.
-    var hit=windowPeak(w);
-    var bw=hit?null:bestInWindow(w);
-    var mark=hit?new Date(hit.t):bw.t;
-    var lbl=hit?'\u2605 peak ':'best ';
-    var dir=(bw&&bw.kind)?'<span class="dir '+bw.kind+'">'+
-      (bw.kind==="rising"?"\u2191 still building":"\u2193 fading")+'</span>':"";
+    var hit=windowBest(w);
+    var mark=hit.t;
+    var lbl=hit.peak?'\u2605 peak ':'best ';
     div.innerHTML=
       '<div class="day">'+dayName(w.arrStart)+'<span class="d2 num">'+w.arrStart.getDate()+'</span></div>'+
       '<div>'+
         '<div class="leg secondary"><span class="dot tide"></span><span class="t num">'+clock(w.ht)+dtag(w.ht,w.arrStart)+'</span><span class="n">high tide, mouth'+(w.htV!=null?" \u00b7 "+w.htV.toFixed(1)+" ft":"")+'</span>'+(w.htBig?'<span class="chip big">big tide</span>':"")+'</div>'+
         '<div class="leg secondary"><span class="dot watch"></span><span class="t num">'+rangeDays(w.sonarStart,w.sonarEnd,w.arrStart)+'</span><span class="n">crosses RM 19 sonar</span></div>'+
-        '<div class="leg arr'+(hit?" ispeak":"")+'"><span class="dot go"></span><span class="t num">'+lbl+clock(mark)+dtag(mark,w.arrStart)+'</span>'+
-        '<span class="str'+(relAt(+mark)>=0.7?" hi":"")+'">'+strengthLabel(+mark)+'</span>'+dir+
+        '<div class="leg arr'+(hit.peak?" ispeak":"")+'"><span class="dot go"></span><span class="t num">'+lbl+clock(mark)+dtag(mark,w.arrStart)+'</span>'+
+        '<span class="str'+(relAt(+mark)>=0.7?" hi":"")+'">'+strengthLabel(+mark)+'</span>'+
         '<span class="n">window '+rangeDays(w.arrStart,w.arrEnd,w.arrStart)+'</span>'+
         (isOpen?'<span class="chip fit" style="background:rgba(224,72,58,.15);border-color:rgba(224,72,58,.4);color:var(--go)">now</span>':'')+'</div>'+
       '</div>';
@@ -752,10 +784,11 @@ function tick(){
 
 function tideURL(){
   var now=new Date();
-  // Fish arriving now left the mouth up to lagHi hrs ago, and the bell reaches
-  // ~3 sigma beyond that. Fetching only 24 hrs back drops every tide that
-  // produces arrivals right now, which reads as "0% / ~0 fish per hour".
-  var back=Math.ceil(S.lagHi/24)+2;
+  // Arrivals at the left edge of the chart were driven by tides BACK_HRS +
+  // lagHi + 3 sigma before now. Fetch that far or the oldest bars taper to
+  // nothing and read as a dead spell that never happened. The old fixed
+  // formula happened to cover BACK_HRS=24 and was 18 hrs short at 48.
+  var back=Math.ceil((BACK_HRS+S.lagHi+3*lagSigma())/24)+1;
   var b=new Date(+now-back*24*MS_H), e=new Date(+now+3*24*MS_H);
   return "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=predictions&application=kenai-run-timer"+
     "&datum=MLLW&station="+encodeURIComponent(S.station)+"&time_zone=lst_ldt&units=english&interval=hilo&format=json"+
@@ -802,12 +835,13 @@ function paceVerdict(cum2026,idx){
 }
 var LAST_SONAR=null;
 var LAST_ROWS=null;
+var DAILY_DAYS=10;      // days of history in the daily count chart
 // One bar per day at the sonar. This is where the range actually is: the run
 // turned on around 7/24 and has been falling since. Zero-based, because a daily
 // count genuinely starts at zero and the height should mean fish.
 function dailyStrip(rows){
   if(!rows||rows.length<3)return"";
-  var use=rows.slice(-21);
+  var use=rows.slice(-DAILY_DAYS);
   var mx=use.reduce(function(m,r){return Math.max(m,r.count);},0)||1;
   var bars=use.map(function(r,i){
     return '<i class="'+(i===use.length-1?"last":"")+
@@ -1026,7 +1060,7 @@ document.getElementById("useHT").onclick=function(){
 };
 document.getElementById("retryTide").onclick=loadTides;
 
-renderSpot(); renderWhy(); fillSettings(); renderChips();
+renderSpot(); renderWindowLabel(); renderWhy(); fillSettings(); renderChips();
 loadTides(); loadSonar(); loadRiver();
 var rzT;
 window.addEventListener("resize",function(){clearTimeout(rzT);rzT=setTimeout(renderBest,180);});
