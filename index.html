@@ -375,20 +375,38 @@ function renderHeroNow(showRate,note){
 // day. The two effects answer different questions. The trend says go sooner
 // (nothing to decide). The tide says which hours within a day are better,
 // which is the only part you can act on. Returns null without a curve.
+//
+// The window is the CALENDAR DAY, not 12 hrs either side of now. A window
+// hung off `now` slides forward every minute, so its ends are never real
+// peaks, and the reported best hour crept along with the clock: two
+// screenshots a minute apart read 12:04 AM and 12:03 AM. Fixed endpoints mean
+// the answer holds still all day, and "today's best" means what it says.
 function tideStanding(){
   var c=CURVE||curveData(); if(!c.fine.length)return null;
-  var now=Date.now(), hi=0, lo=Infinity, best=null;
-  for(var t=now-12*3600e3;t<=now+12*3600e3;t+=15*60000){
-    var v=intensityAt(t);
-    if(v>hi){hi=v; best=t;}
-    if(v<lo) lo=v;
+  var now=Date.now(), n=new Date(now);
+  function scan(dayOffset){
+    var s=new Date(n.getFullYear(),n.getMonth(),n.getDate()+dayOffset);
+    var e=+s+24*3600e3, hi=0, lo=Infinity, best=null;
+    for(var t=+s;t<e;t+=15*60000){
+      var v=intensityAt(t);
+      if(v>hi){hi=v; best=t;}
+      if(v<lo) lo=v;
+    }
+    return hi>0?{hi:hi,lo:lo,best:best}:null;
   }
-  if(!(hi>0))return null;
+  var d=scan(0); if(!d)return null;
+  // Once today's peak is behind you, pointing at it is no use. Roll forward.
+  var tomorrow=false;
+  if(d.best<now-45*60000){
+    var t2=scan(1);
+    if(t2){ d=t2; tomorrow=true; }
+  }
   var nowI=intensityAt(now);
-  return {pct:Math.round(nowI/hi*100),
-          spread:(hi-lo)/hi,
-          bestT:best,
-          bestAhead:best>now+45*60000};
+  return {pct:Math.min(100,Math.round(nowI/d.hi*100)),
+          spread:(d.hi-d.lo)/d.hi,
+          bestT:d.best,
+          bestAhead:d.best>now+45*60000,
+          tomorrow:tomorrow};
 }
 var heroCountdownTarget=null;
 function renderHero(){
@@ -450,12 +468,16 @@ function renderHero(){
   var note="";
   if(ts){
     if(ts.spread<0.10){
-      note='Tide timing barely moves things today, about <b>'+
-        Math.round(ts.spread*100)+'%</b> between the best and worst hour. Any hour will do.';
+      note='Tide timing barely moves things '+(ts.tomorrow?'tomorrow':'today')+
+        ', about <b>'+Math.round(ts.spread*100)+
+        '%</b> between the best and worst hour. Any hour will do.';
     }else{
-      note='On tide timing this hour is <b>'+ts.pct+'%</b> of today\u2019s best'+
-        (ts.bestAhead?', which comes at <b>'+clock(new Date(ts.bestT))+'</b>.'
-                     :', which has passed.');
+      var when=ts.tomorrow?'tomorrow\u2019s best':'today\u2019s best';
+      note='On tide timing this hour is <b>'+ts.pct+'%</b> of '+when+
+        (ts.bestAhead?', which comes at <b>'+clock(new Date(ts.bestT))+
+           (ts.tomorrow?' '+dayName(new Date(ts.bestT)):'')+'</b>.'
+         :ts.pct>=95?', and you are on it.'
+         :', which has passed.');
     }
     if(src) note+=' The fish arriving now rode the '+clock(src.ht)+
       (src.htV!=null?" ("+src.htV.toFixed(1)+" ft)":"")+' high tide at the mouth.';
