@@ -52,6 +52,8 @@
     color:var(--muted); font-weight:700}
   #hero .nowbox .v{font-size:27px; font-weight:800; letter-spacing:-.01em; margin-top:3px}
   #hero .nowbox .sub{font-size:13px; color:var(--faint); margin-top:4px; line-height:1.45}
+  #hero .nowbox .note2{color:var(--muted); font-size:13.5px; margin-top:7px}
+  #hero .nowbox .note2 b{color:var(--text); font-weight:700}
   .chip{display:inline-block; font-size:11px; font-weight:700; letter-spacing:.04em; padding:3px 8px; border-radius:999px; margin-left:6px; vertical-align:middle}
   .chip.fit{background:rgba(86,196,181,.14); color:var(--tide); border:1px solid rgba(86,196,181,.35)}
   .pulse{animation:p 2.4s ease-in-out infinite}
@@ -344,7 +346,7 @@ function renderSpot(){
 // Below a divider in the hero: what is reaching the spot right now, and the
 // count driving it. The current forecast is the thing most worth seeing first,
 // and the sonar figure is what actually sets the scale of everything else.
-function renderHeroNow(showRate){
+function renderHeroNow(showRate,note){
   var el=document.getElementById("heroNow"); if(!el)return;
   var f=fishScale(), out="";
   if(showRate){
@@ -353,6 +355,7 @@ function renderHeroNow(showRate){
       (f?"~"+fishFmt(shownAtTime(Date.now()))+" fish/hr"
         :Math.round(relAt(Date.now())*100)+"% on tide timing")+'</div>';
   }
+  if(note) out+='<div class="sub note2">'+note+'</div>';
   if(LAST_SONAR&&LAST_SONAR.d!=null){
     out+='<div class="sub num">'+commas(LAST_SONAR.d)+'/day at the sonar on '+
       (LAST_SONAR.o.getMonth()+1)+'/'+LAST_SONAR.o.getDate()+
@@ -377,7 +380,7 @@ function renderHero(){
     document.getElementById("heroBig").textContent="\u2014";
     document.getElementById("heroRange").textContent="";
     document.getElementById("heroMeta").textContent="Load a high tide below to compute your windows.";
-    renderHeroNow(false);
+    renderHeroNow(false,"");
     heroCountdownTarget=null; renderBest(); return;
   }
   var open=wins.filter(function(w){return w.arrStart<=now && now<=w.arrEnd;})[0];
@@ -401,52 +404,50 @@ function renderHero(){
       'Fish when you can. '+
       (fsF?'What matters is the run: '+commas(fsF.daily)+'/day at the sonar.'
          :'Add a sonar count in Run strength to see fish/hr.');
-    renderHeroNow(false);
+    renderHeroNow(false,"");
     heroCountdownTarget=null;
     renderTimeline(wins,open); renderBest(); return;
   }
-  var pk=cd.peaks.slice();
-  if(!pk.length) pk=wins.map(function(w){return {t:+w.peak,r:null};})
-                       .filter(function(x){return x.t>+now-45*60000;});
-  var near=pk.filter(function(p){return Math.abs(p.t-now)<=45*60000;})[0];
-  var nextPk=pk.filter(function(p){return p.t>+now;})[0];
-  var show=near||nextPk;
-  if(!show){ renderHeroNow(true); renderTimeline(wins,open); renderBest(); return; }
-  var d=new Date(show.t);
-  // which tide drove it
-  var src=wins.slice().sort(function(a,b){return Math.abs(a.peak-show.t)-Math.abs(b.peak-show.t);})[0];
+  // The best time ahead, measured on the numbers the app prints. Reading this
+  // off raw tide shape produced a "next peak" carrying FEWER fish than right
+  // now, which is what made the hero and the graph disagree.
   var fsH=fishScale();
-  var strength=(show.r==null)?"":
-    '<span class="chip pk">'+(fsH?"~"+fishFmt(fsH.perHrAt(show.r,show.t))+" fish/hr":Math.round(show.r*100)+"% on tide timing")+'</span>';
+  var nowShown=fsH?fsH.perHrAt(nowR,+now):nowR;
+  var fut=cd.fine.filter(function(p){return p.t>=+now&&p.t<=+now+FWD_HRS*3600e3;});
+  var best=fut.reduce(function(b,p){return (!b||p.v>b.v)?p:b;},null);
+  if(!best){ renderHeroNow(true,""); renderTimeline(wins,open); renderBest(); return; }
+  // If nothing ahead beats right now, right now IS the best. Saying "next peak"
+  // in that situation is simply false.
+  var isNow=(best.t-(+now)<=45*60000)||(nowShown>=best.v);
+  var shownBest=isNow?nowShown:best.v;
+  var d=new Date(isNow?+now:best.t);
+  var src=wins.slice().sort(function(a,b){return Math.abs(a.peak-d)-Math.abs(b.peak-d);})[0];
+  var pct=shownBest>0?Math.round(nowShown/shownBest*100):0;
+  var rode=(src?(isNow?'It rode the ':'That one rides the ')+clock(src.ht)+
+            (src.htV!=null?" ("+src.htV.toFixed(1)+" ft)":"")+' high tide at the mouth.':'');
+  var note='You\u2019re at <b>'+pct+'%</b> of the best arrival in the next '+
+           FWD_HRS+' hrs. '+rode;
+  document.getElementById("heroMeta").innerHTML="";
 
-  if(near){
+  if(isNow){
     hero.className="card go";
-    document.getElementById("heroState").innerHTML='<span class="pulse">\u25cf</span> Peak arriving now';
-    document.getElementById("heroBig").textContent=clock(d);
-    document.getElementById("heroRange").innerHTML=strength;
-    document.getElementById("heroMeta").innerHTML='This is the densest arrival of the wave. Rode the '+
-      clock(src.ht)+(src.htV!=null?" ("+src.htV.toFixed(1)+" ft)":"")+' high tide at the mouth.'+
-      (open?' Window runs to '+clock(open.arrEnd)+'.':"");
+    document.getElementById("heroState").innerHTML='<span class="pulse">\u25cf</span> Best right now';
+    document.getElementById("heroBig").textContent=
+      fsH?"~"+fishFmt(nowShown)+" fish/hr":Math.round(nowShown*100)+"%";
+    document.getElementById("heroRange").innerHTML=
+      open?'<span class="chip fit">window runs to '+clock(open.arrEnd)+'</span>':"";
+    renderHeroNow(false,note);
     heroCountdownTarget=null;
   }else{
     hero.className="card next";
-    document.getElementById("heroState").textContent="Next peak \u00b7 "+dayName(d);
+    document.getElementById("heroState").textContent="Best ahead \u00b7 "+dayName(d);
     document.getElementById("heroBig").textContent=clock(d);
-    document.getElementById("heroRange").innerHTML='in <span id="cd" class="num"></span> '+strength;
-    var fut=cd.fine.filter(function(p){return p.t>=+now&&p.t<=+now+48*3600e3;});
-    var shown=function(p){return fsH?fsH.perHrAt(p.r,p.t):p.r;};
-    var nowShown=fsH?fsH.perHrAt(nowR,+now):nowR;
-    // "now" is evaluated at the exact instant while the samples sit on a snapped
-    // 15-min grid, so on a falling run now can beat every gridded point and the
-    // ratio goes over 100%. Include now in the comparison.
-    var bestFut=fut.reduce(function(m,p){return Math.max(m,shown(p));},nowShown);
-    var pctOfBest=bestFut>0?Math.round(nowShown/bestFut*100):0;
-    document.getElementById("heroMeta").innerHTML='Right now you\u2019re at <b>'+pctOfBest+
-      '%</b> of the best arrival in the next '+FWD_HRS+' hrs. This peak rode the '+clock(src.ht)+
-      (src.htV!=null?" ("+src.htV.toFixed(1)+" ft)":"")+' high tide at the mouth.';
+    document.getElementById("heroRange").innerHTML='in <span id="cd" class="num"></span> '+
+      '<span class="chip pk">'+(fsH?"~"+fishFmt(best.v)+" fish/hr":
+        Math.round(best.v*100)+"% on tide timing")+'</span>';
+    renderHeroNow(true,note);
     heroCountdownTarget={el:"cd",time:d};
   }
-  renderHeroNow(true);
   renderTimeline(wins,open);
   renderBest();
 }
@@ -486,26 +487,37 @@ function buildCurve(backHours,fwdHours,stepMin){
 var CURVE=null;
 function curveData(){
   var fine=buildCurve(BACK_HRS,FWD_HRS,15);   // 15-min resolution, one source of truth
-  var peaks=findPeaks(fine).sort(function(a,b){return a.t-b.t;});
   var now=Date.now();
   var mx=fine.mx||1;
-  CURVE={fine:fine, peaks:peaks,
-         future:peaks.filter(function(p){return p.t>=now;}),
-         mx:mx, nowIdx:fine.nowIdx||0,
+  CURVE={fine:fine, peaks:[], future:[], mx:mx, nowIdx:fine.nowIdx||0,
          // Snapping the grid to absolute time means the nearest sample can be up
          // to one step old, so evaluate "right now" directly instead of reading it.
          nowR:fine.length?intensityAt(now)/mx:0};
+  // Second pass. p.v is the number the app will actually print at that time:
+  // tide shape scaled by the sonar count for the day those fish crossed. Peaks
+  // and highlights must come from THIS, not from p.r. Picking them off raw tide
+  // shape while printing p.v beside them produced a "next peak" with fewer fish
+  // than right now, and starred the smaller of two listed peaks.
+  // fishScale needs CURVE to exist, hence the second pass rather than inline.
+  var f=fishScale();
+  for(var i=0;i<fine.length;i++) fine[i].v=f?f.perHrAt(fine[i].r,fine[i].t):fine[i].r;
+  CURVE.peaks=findPeaks(fine).sort(function(a,b){return a.t-b.t;});
+  CURVE.future=CURVE.peaks.filter(function(p){return p.t>=now;});
   return CURVE;
 }
 function findPeaks(pts){
-  var out=[];
+  var out=[], W=4;   // must also be the highest point within an hour either side
   // No boundary special-case. The curve starts BACK_HRS before now, so a peak
   // in progress has real samples either side and the normal scan finds it.
   // Treating index 0 as a peak whenever the curve was declining there invented
   // a fresh "peak" at the current time on every single render.
-  for(var k=1;k<pts.length-1;k++)
-    if(pts[k].i>pts[k-1].i&&pts[k].i>=pts[k+1].i&&pts[k].r>0.3) out.push(pts[k]);
-  return out.sort(function(a,b){return b.i-a.i;});
+  for(var k=W;k<pts.length-W;k++){
+    if(!(pts[k].v>pts[k-1].v&&pts[k].v>=pts[k+1].v)) continue;
+    var top=true;
+    for(var j=k-W;j<=k+W;j++) if(j!==k&&pts[j].v>pts[k].v){ top=false; break; }
+    if(top) out.push(pts[k]);
+  }
+  return out.sort(function(a,b){return b.v-a.v;});
 }
 function relAt(ms){var c=CURVE||curveData();return c.mx?intensityAt(ms)/c.mx:0;}
 // How much the next 24 hrs actually varies, measured on the numbers the chart
@@ -634,12 +646,14 @@ function renderBest(){
   var fs=fishScale();
   var spread=flatness();
   var flat=(spread!=null&&spread<FLAT_AT);
-  var peaks=cd.future.slice().sort(function(a,b){return b.r-a.r;}).slice(0,3)
+  var peaks=cd.future.slice().sort(function(a,b){return b.v-a.v;}).slice(0,3)
               .sort(function(a,b){return a.t-b.t;});
   // The curve is normalised over 72 hrs including 24 hrs of history, so if the
   // biggest arrival already happened no future peak reaches 1.0 and nothing gets
   // starred. Star the strongest peak actually listed instead.
-  var bestShown=peaks.reduce(function(m,p){return Math.max(m,p.r);},0);
+  var bestShown=peaks.reduce(function(m,p){return Math.max(m,p.v);},0);
+  var ahead=cd.fine.filter(function(p){return p.t>=Date.now();});
+  var fallingAhead=ahead.length>1&&ahead[ahead.length-1].v<ahead[0].v;
   var firstFuture=-1;
   pts.forEach(function(p,i){ if(firstFuture<0&&!p.past) firstFuture=i; });
   // Zoom the axis to what is actually happening, so building / peaking / fading
@@ -694,7 +708,7 @@ function renderBest(){
       'Pick whichever suits you.</div>':"")+
     peaks.map(function(p){
       var d=new Date(p.t);
-      var top=(!flat&&bestShown>0&&p.r>=bestShown-1e-9);
+      var top=(!flat&&bestShown>0&&p.v>=bestShown-1e-9);
       var hrsAway=(p.t-Date.now())/3600e3;
       var away=hrsAway<1?"in "+Math.max(1,Math.round(hrsAway*60))+"m":"in "+Math.round(hrsAway)+"h";
       // 12:00 AM is the START of a day. "Tmrw 12:00 AM" reads to most people as
@@ -704,10 +718,17 @@ function renderBest(){
       return '<div class="peakrow'+(top?" top":"")+'">'+(top?'<span class="star">\u2605</span>':"")+
         '<span class="t num">'+dayName(d)+" "+clock(d)+'</span>'+mn+
         '<span class="away">'+away+'</span>'+
-        '<span class="pct">'+(fs?"~"+fishFmt(fs.perHrAt(p.r,p.t))+" fish/hr":Math.round(p.r*100)+"%")+'</span>'+
+        '<span class="pct">'+(fs?"~"+fishFmt(p.v)+" fish/hr":Math.round(p.v*100)+"%")+'</span>'+
         (top?'<span class="n">biggest of the next '+FWD_HRS+' hrs</span>':"")+
         '</div>';
     }).join("")+
+    // With a steady trend and small tides the forecast can fall (or climb) all
+    // the way through the window with no local maximum anywhere in it. Listing
+    // tide peaks anyway is what put a smaller number under "biggest of the next
+    // 48 hrs". If there is no peak, say so and say which way it is going.
+    (peaks.length?"":'<div class="peakrow"><span class="n">No peak ahead in the next '+
+      FWD_HRS+' hrs. The forecast '+(fallingAhead?'falls steadily from here, so earlier is better.'
+      :'climbs steadily, so later is better.')+'</span></div>')+
     (fs
       ? '<div class="note" style="margin-top:10px"><b>Rough numbers.</b> Each hour is scaled by '+
         'the sonar count for the day those fish crossed RM 19, then carried up to you. '+
