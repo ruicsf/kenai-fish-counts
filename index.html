@@ -369,6 +369,27 @@ function renderHeroNow(showRate,note){
   }
   el.innerHTML=out?'<div class="nowbox">'+out+'</div>':"";
 }
+// Where this hour sits on TIDE TIMING alone, ignoring the run trend.
+// Comparing against everything ahead is useless on a falling run: the best
+// thing ahead is always this instant, so it reads 100% every hour of every
+// day. The two effects answer different questions. The trend says go sooner
+// (nothing to decide). The tide says which hours within a day are better,
+// which is the only part you can act on. Returns null without a curve.
+function tideStanding(){
+  var c=CURVE||curveData(); if(!c.fine.length)return null;
+  var now=Date.now(), hi=0, lo=Infinity, best=null;
+  for(var t=now-12*3600e3;t<=now+12*3600e3;t+=15*60000){
+    var v=intensityAt(t);
+    if(v>hi){hi=v; best=t;}
+    if(v<lo) lo=v;
+  }
+  if(!(hi>0))return null;
+  var nowI=intensityAt(now);
+  return {pct:Math.round(nowI/hi*100),
+          spread:(hi-lo)/hi,
+          bestT:best,
+          bestAhead:best>now+45*60000};
+}
 var heroCountdownTarget=null;
 function renderHero(){
   renderSonarDayNote();
@@ -423,10 +444,25 @@ function renderHero(){
   var d=new Date(isNow?+now:best.t);
   var src=wins.slice().sort(function(a,b){return Math.abs(a.peak-d)-Math.abs(b.peak-d);})[0];
   var pct=shownBest>0?Math.round(nowShown/shownBest*100):0;
-  var rode=(src?(isNow?'It rode the ':'That one rides the ')+clock(src.ht)+
-            (src.htV!=null?" ("+src.htV.toFixed(1)+" ft)":"")+' high tide at the mouth.':'');
-  var note='You\u2019re at <b>'+pct+'%</b> of the best arrival in the next '+
-           FWD_HRS+' hrs. '+rode;
+  // Two separate facts, kept separate. Mashing them into one percentage is what
+  // pinned the old line at 100% all day long.
+  var ts=tideStanding();
+  var note="";
+  if(ts){
+    if(ts.spread<0.10){
+      note='Tide timing barely moves things today, about <b>'+
+        Math.round(ts.spread*100)+'%</b> between the best and worst hour. Any hour will do.';
+    }else{
+      note='On tide timing this hour is <b>'+ts.pct+'%</b> of today\u2019s best'+
+        (ts.bestAhead?', which comes at <b>'+clock(new Date(ts.bestT))+'</b>.'
+                     :', which has passed.');
+    }
+    if(src) note+=' The fish arriving now rode the '+clock(src.ht)+
+      (src.htV!=null?" ("+src.htV.toFixed(1)+" ft)":"")+' high tide at the mouth.';
+  }else if(src){
+    note='The fish arriving now rode the '+clock(src.ht)+
+      (src.htV!=null?" ("+src.htV.toFixed(1)+" ft)":"")+' high tide at the mouth.';
+  }
   document.getElementById("heroMeta").innerHTML="";
 
   if(isNow){
