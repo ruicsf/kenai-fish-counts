@@ -362,13 +362,13 @@ function renderHeroNow(showRate,note){
   }
   if(note) out+='<div class="sub note2">'+note+'</div>';
   if(LAST_SONAR&&LAST_SONAR.d!=null){
-    out+='<h3 class="sub num">'+commas(LAST_SONAR.d)+'/day at the sonar on '+
+    out+='<p class="bestLabel">'+commas(LAST_SONAR.d)+'/day at the sonar on '+
       (LAST_SONAR.o.getMonth()+1)+'/'+LAST_SONAR.o.getDate()+
       (f&&f.projected&&Math.abs(f.trend-1)>0.03
         ? ' \u00b7 '+(f.trend<1?"falling":"rising")+' '+
           Math.round(Math.abs(f.trend-1)*100)+'% a day'
         : '')+
-      (LAST_SONAR.l?'':' \u00b7 entered by hand')+'</h3>';
+      (LAST_SONAR.l?'':' \u00b7 entered by hand')+'</p>';
   }else{
     out+='<div class="sub">No sonar count yet. Add one in Run strength to see fish/hr.</div>';
   }
