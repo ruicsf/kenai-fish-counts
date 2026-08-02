@@ -237,6 +237,11 @@
   <p class="note" id="lagNow"></p>
 </section>
 
+<details id="calib">
+  <summary>Calibration &mdash; narrow your window</summary>
+  <div class="body" id="calibBody"></div>
+</details>
+
 <details>
   <summary>How the timing works</summary>
   <div class="body note" id="whyBody"></div>
@@ -369,44 +374,34 @@ function renderHeroNow(showRate,note){
   }
   el.innerHTML=out?'<div class="nowbox">'+out+'</div>':"";
 }
-// Where this hour sits on TIDE TIMING alone, ignoring the run trend.
-// Comparing against everything ahead is useless on a falling run: the best
-// thing ahead is always this instant, so it reads 100% every hour of every
-// day. The two effects answer different questions. The trend says go sooner
-// (nothing to decide). The tide says which hours within a day are better,
-// which is the only part you can act on. Returns null without a curve.
+// Is any hour in the next day actually worth waiting for? Answered in fish/hr,
+// the same unit as the headline, so it can be checked against the graph.
 //
-// The window is the CALENDAR DAY, not 12 hrs either side of now. A window
-// hung off `now` slides forward every minute, so its ends are never real
-// peaks, and the reported best hour crept along with the clock: two
-// screenshots a minute apart read 12:04 AM and 12:03 AM. Fixed endpoints mean
-// the answer holds still all day, and "today's best" means what it says.
-function tideStanding(){
-  var c=CURVE||curveData(); if(!c.fine.length)return null;
-  var now=Date.now(), n=new Date(now);
-  function scan(dayOffset){
-    var s=new Date(n.getFullYear(),n.getMonth(),n.getDate()+dayOffset);
-    var e=+s+24*3600e3, hi=0, lo=Infinity, best=null;
-    for(var t=+s;t<e;t+=15*60000){
-      var v=intensityAt(t);
-      if(v>hi){hi=v; best=t;}
-      if(v<lo) lo=v;
-    }
-    return hi>0?{hi:hi,lo:lo,best:best}:null;
+// The old version reported this hour as a percentage of the day's best on tide
+// shape alone. Two things were wrong with that. A percentage of a nearly flat
+// curve can never leave the top of its range: with a 9% tide spread it read
+// 90-100% forever and sat on 100% for hours. And it ignored the run trend while
+// the graph included it, so the words and the picture disagreed.
+function waitVerdict(){
+  var c=CURVE||curveData();
+  // With no tides loaded the array is full of zeroes rather than empty, so
+  // checking length alone returned a verdict of all zeros instead of nothing.
+  if(!c.fine.length||!(c.mx>0)||!c.fine.some(function(p){return p.i>0;}))return null;
+  var f=fishScale(), now=Date.now();
+  var ahead=c.fine.filter(function(p){return p.t>now+30*60000&&p.t<=now+24*3600e3;});
+  if(!ahead.length)return null;
+  var best=ahead.reduce(function(b,p){return (!b||p.v>b.v)?p:b;},null);
+  var nowV=f?f.perHrAt(intensityAt(now)/c.mx,now):intensityAt(now)/c.mx;
+  // Tide-only spread across the calendar day, for the "why not" explanation.
+  var n=new Date(now), s=new Date(n.getFullYear(),n.getMonth(),n.getDate());
+  var hi=0, lo=Infinity;
+  for(var t=+s;t<+s+24*3600e3;t+=15*60000){
+    var v=intensityAt(t); if(v>hi)hi=v; if(v<lo)lo=v;
   }
-  var d=scan(0); if(!d)return null;
-  // Once today's peak is behind you, pointing at it is no use. Roll forward.
-  var tomorrow=false;
-  if(d.best<now-45*60000){
-    var t2=scan(1);
-    if(t2){ d=t2; tomorrow=true; }
-  }
-  var nowI=intensityAt(now);
-  return {pct:Math.min(100,Math.round(nowI/d.hi*100)),
-          spread:(d.hi-d.lo)/d.hi,
-          bestT:d.best,
-          bestAhead:d.best>now+45*60000,
-          tomorrow:tomorrow};
+  return {nowV:nowV, bestV:best.v, bestT:best.t,
+          gain:nowV>0?best.v/nowV-1:0,
+          tideSpread:hi>0?(hi-lo)/hi:0,
+          hasScale:!!f};
 }
 var heroCountdownTarget=null;
 function renderHero(){
@@ -464,20 +459,28 @@ function renderHero(){
   var pct=shownBest>0?Math.round(nowShown/shownBest*100):0;
   // Two separate facts, kept separate. Mashing them into one percentage is what
   // pinned the old line at 100% all day long.
-  var ts=tideStanding();
+  var wv=waitVerdict();
   var note="";
-  if(ts){
-    if(ts.spread<0.10){
-      note='Tide timing barely moves things '+(ts.tomorrow?'tomorrow':'today')+
-        ', about <b>'+Math.round(ts.spread*100)+
-        '%</b> between the best and worst hour. Any hour will do.';
+  if(wv){
+    var f2=fishScale();
+    var n2=function(v){return wv.hasScale?"~"+fishFmt(v)+" fish/hr":Math.round(v*100)+"%";};
+    if(wv.gain>0.10){
+      note='Waiting until <b>'+clock(new Date(wv.bestT))+'</b> gets you about <b>'+
+        n2(wv.bestV)+'</b>, against '+n2(wv.nowV)+' now.';
+    }else if(wv.gain>0.02){
+      note='The best hour in the next 24 is <b>'+clock(new Date(wv.bestT))+
+        '</b> at '+n2(wv.bestV)+', barely above the '+n2(wv.nowV)+
+        ' you have now. Not worth waiting for.';
     }else{
-      var when=ts.tomorrow?'tomorrow\u2019s best':'today\u2019s best';
-      note='On tide timing this hour is <b>'+ts.pct+'%</b> of '+when+
-        (ts.bestAhead?', which comes at <b>'+clock(new Date(ts.bestT))+
-           (ts.tomorrow?' '+dayName(new Date(ts.bestT)):'')+'</b>.'
-         :ts.pct>=95?', and you are on it.'
-         :', which has passed.');
+      note='Nothing in the next 24 hrs beats this hour.';
+      if(f2&&f2.trend<0.98){
+        note+=' The run is dropping <b>'+Math.round((1-f2.trend)*100)+
+          '% a day</b>, faster than tide timing can make up ('+
+          Math.round(wv.tideSpread*100)+'% between the best and worst hour).';
+      }else if(wv.tideSpread<0.12){
+        note+=' Tide timing only moves things '+Math.round(wv.tideSpread*100)+
+          '% across the day, so any hour will do.';
+      }
     }
     if(src) note+=' The fish arriving now rode the '+clock(src.ht)+
       (src.htV!=null?" ("+src.htV.toFixed(1)+" ft)":"")+' high tide at the mouth.';
@@ -878,7 +881,7 @@ function loadTides(){
   fetch(tideURL()).then(function(r){return r.json();}).then(function(j){
     if(!j.predictions||!j.predictions.length) throw new Error(j.error?j.error.message:"No predictions");
     HIGH_TIDES=j.predictions.filter(function(p){return p.type==="H";}).map(function(p){return {t:parseNoaa(p.t),v:parseFloat(p.v)};});
-    renderHero();
+    renderHero(); renderCalib();
   }).catch(function(err){
     document.getElementById("tideFallback").style.display="block";
     document.getElementById("tideErr").textContent="Couldn't reach NOAA tides ("+err.message+"). Enter a high tide by hand to compute windows offline.";
@@ -1002,6 +1005,178 @@ function loadSonar(){
   }).catch(manual);
 }
 
+// ---- Calibration -----------------------------------------------------------
+// The one lever that makes the hourly forecast mean anything. High tides arrive
+// 12.42 hrs apart, so a lag window wider than that guarantees consecutive waves
+// overlap and the forecast flattens. At the 31-47 default (16 hrs wide) the best
+// hour beats the worst by 1.10x, which is no basis for a decision. At 8 hrs wide
+// it is 3.6x. Only real sessions can close that gap.
+var CAL_MIN_MPH=0.7, CAL_MAX_MPH=2.2;   // believable river speeds over ground
+
+function calLoad(){ return loadJSON("kenai_calib_v1",[])||[]; }
+function calSave(a){ saveJSON("kenai_calib_v1",a); }
+
+// Every big tide that could plausibly have driven a session at time `ms`.
+// Big tides only: they run ~24.8 hrs apart instead of 12.4, so the candidates
+// are far enough apart to tell apart at all. Ordinary tides would give a dozen
+// answers within a believable speed range.
+function calCandidates(ms){
+  var out=[];
+  HIGH_TIDES.forEach(function(x){
+    if(x.v==null||x.v<BIG_TIDE_FT)return;
+    var lag=(ms-+x.t)/MS_H;
+    if(lag<=0)return;
+    var mph=SPOT_RM/lag;
+    if(mph<CAL_MIN_MPH||mph>CAL_MAX_MPH)return;
+    out.push({t:+x.t, v:x.v, lag:lag, mph:mph});
+  });
+  return out.sort(function(a,b){return a.lag-b.lag;});
+}
+// Peak-to-trough contrast for a given window, so the payoff is visible rather
+// than asserted. Same maths the forecast uses.
+function calContrast(lo,hi){
+  if(!HIGH_TIDES.length)return null;
+  var c=(lo+hi)/2*MS_H, sig=Math.max(1.5,(hi-lo)/2.5);
+  var base=+HIGH_TIDES[Math.floor(HIGH_TIDES.length/2)].t;
+  function I(ms){ return HIGH_TIDES.reduce(function(a,x){
+    var w=(x.v==null)?2.5:Math.max(0.2,x.v-12);
+    var dh=(ms-(+x.t+c))/MS_H;
+    return a+w*Math.exp(-dh*dh/(2*sig*sig));},0); }
+  var mx=0,mn=Infinity;
+  for(var t=base;t<=base+24*MS_H;t+=9e5){ var v=I(t); if(v>mx)mx=v; if(v<mn)mn=v; }
+  return (mn>0)?mx/mn:null;
+}
+// Suggested window from the logged sessions: fastest and slowest observed,
+// rounded outward by half an hour so the range is not tighter than the data.
+function calSuggest(){
+  var rows=calLoad().filter(function(r){return r.lag>0;});
+  if(rows.length<3)return null;
+  var lags=rows.map(function(r){return r.lag;});
+  var lo=Math.floor(Math.min.apply(null,lags)*2)/2;
+  var hi=Math.ceil(Math.max.apply(null,lags)*2)/2;
+  if(hi-lo<2){ lo-=1; hi+=1; }        // never narrower than the data supports
+  return {lo:lo, hi:hi, n:rows.length,
+          now:calContrast(S.lagLo,S.lagHi), then:calContrast(lo,hi)};
+}
+var CAL_PICK=null;   // candidate chosen in the form, if any
+
+function renderCalib(){
+  var el=document.getElementById("calibBody"); if(!el)return;
+  var rows=calLoad(), sug=calSuggest();
+  var wide=(S.lagHi-S.lagLo)>12.42;
+  var h="";
+
+  h+='<p class="note">High tides arrive <b>12.4 hrs</b> apart. While your window is '+
+     'wider than that, one tide\u2019s fish are still arriving as the next tide\u2019s '+
+     'begin, so the forecast flattens and no hour stands out. Yours is <b>'+
+     (S.lagHi-S.lagLo)+' hrs</b> wide'+(wide?', which is why you see no peaks.':'.')+'</p>';
+
+  var cNow=calContrast(S.lagLo,S.lagHi);
+  if(cNow) h+='<p class="note">Right now the best hour beats the worst by <b>'+
+    cNow.toFixed(2)+'x</b>. Under 12.4 hrs wide that climbs sharply.</p>';
+
+  h+='<hr class="soft"><p class="label">Log a session</p>'+
+     '<p class="note">Use the <b>middle</b> of the session, not the moment a slug hit. '+
+     'Slugs are fish stacking below you and releasing in groups; they are not the tide.</p>'+
+     '<div class="field"><label>Middle of the session</label>'+
+       '<input type="datetime-local" id="calWhen"></div>'+
+     '<div id="calCands"><p class="note">Pick a time and the tides that could have '+
+       'driven it will appear here.</p></div>'+
+     '<div class="field"><label>River flow that day (cfs, optional)</label>'+
+       '<input type="number" id="calCfs" inputmode="numeric"></div>'+
+     '<button class="primary" id="calAdd">Add session</button>';
+
+  if(rows.length){
+    h+='<hr class="soft"><p class="label">Logged sessions ('+rows.length+')</p>';
+    rows.forEach(function(r,i){
+      var d=new Date(r.when), td=new Date(r.tideT);
+      h+='<div class="leg" style="border-top:1px solid var(--line);padding-top:8px">'+
+        '<span class="t num">'+d.toLocaleDateString([],{month:"short",day:"numeric"})+
+          ' '+clock(d)+'</span>'+
+        '<span class="str hi">'+r.lag.toFixed(1)+' hrs</span>'+
+        '<span class="n">'+r.mph.toFixed(2)+' mph \u00b7 off the '+clock(td)+' '+
+          r.tideV.toFixed(1)+' ft tide'+(r.cfs?' \u00b7 '+commas(r.cfs)+' cfs':'')+'</span>'+
+        '<button class="ghost" data-del="'+i+'" style="padding:2px 8px;font-size:12px">remove</button>'+
+        '</div>';
+    });
+  }
+
+  if(sug){
+    var gain=(sug.now&&sug.then)?(sug.then/sug.now):null;
+    h+='<hr class="soft"><p class="label">Suggested from your '+sug.n+' sessions</p>'+
+      '<div class="bignum num">'+sug.lo+'\u2013'+sug.hi+' hrs</div>'+
+      '<p class="note">'+(SPOT_RM/sug.hi).toFixed(2)+'\u2013'+(SPOT_RM/sug.lo).toFixed(2)+
+        ' mph over ground'+
+        (sug.then?'. Best hour would beat worst by <b>'+sug.then.toFixed(2)+'x</b>'+
+          (gain?', up from '+sug.now.toFixed(2)+'x':'')+'.':'.')+
+        ((sug.hi-sug.lo)>12.42
+          ?' Still wider than 12.4 hrs, so waves keep overlapping. More sessions '+
+           'may tighten it, or the spread may be real.'
+          :' Under 12.4 hrs, so waves separate and real peaks appear.')+'</p>'+
+      '<button class="primary" id="calApply">Use '+sug.lo+'\u2013'+sug.hi+' hrs</button>';
+  }else{
+    h+='<hr class="soft"><p class="note"><b>'+Math.max(0,3-rows.length)+
+      ' more session'+(3-rows.length===1?'':'s')+'</b> and a window will be suggested. '+
+      'Log them off big tides only (16 ft or more); ordinary tides come too close '+
+      'together to tell apart.</p>';
+  }
+  el.innerHTML=h;
+
+  var w=document.getElementById("calWhen");
+  if(w) w.onchange=function(){ CAL_PICK=null; renderCalCands(); };
+  var add=document.getElementById("calAdd");
+  if(add) add.onclick=calAddSession;
+  var ap=document.getElementById("calApply");
+  if(ap) ap.onclick=function(){
+    S.lagLo=sug.lo; S.lagHi=sug.hi; saveJSON("kenai_settings_v1",S);
+    fillSettings(); renderChips(); renderWhy(); renderHero(); renderCalib();
+  };
+  Array.prototype.forEach.call(el.querySelectorAll("[data-del]"),function(b){
+    b.onclick=function(){ var a=calLoad(); a.splice(+b.dataset.del,1); calSave(a); renderCalib(); };
+  });
+}
+function renderCalCands(){
+  var box=document.getElementById("calCands"); if(!box)return;
+  var v=document.getElementById("calWhen").value;
+  if(!v){ box.innerHTML='<p class="note">Pick a time first.</p>'; return; }
+  var ms=+new Date(v);
+  var c=calCandidates(ms);
+  if(!c.length){
+    box.innerHTML='<p class="err">No big tide in range for that time. Either the '+
+      'session is outside the tide data the app has loaded, or no 16 ft tide falls '+
+      Math.round(SPOT_RM/CAL_MAX_MPH)+'\u2013'+Math.round(SPOT_RM/CAL_MIN_MPH)+
+      ' hrs before it.</p>';
+    return;
+  }
+  // One session usually cannot settle which tide it was: 31 hrs gives 1.52 mph
+  // and the tide before it gives 1.08 mph, both believable. Show them all, let
+  // the angler judge, and let agreement across trips do the real work.
+  box.innerHTML='<p class="label" style="margin-top:10px">Which tide pushed them?</p>'+
+    '<p class="note" style="margin-top:-4px">More than one can look believable. '+
+    'Pick the one that matches the water you saw; agreement across trips is what '+
+    'settles it.</p><div class="chips">'+
+    c.map(function(x,i){
+      return '<button class="lagchip'+(CAL_PICK===i?" on":"")+'" data-c="'+i+'">'+
+        clock(new Date(x.t))+' \u00b7 '+x.v.toFixed(1)+' ft'+
+        '<small>'+x.lag.toFixed(1)+' hrs \u00b7 '+x.mph.toFixed(2)+' mph</small></button>';
+    }).join("")+'</div>';
+  Array.prototype.forEach.call(box.querySelectorAll("[data-c]"),function(b){
+    b.onclick=function(){ CAL_PICK=+b.dataset.c; renderCalCands(); };
+  });
+}
+function calAddSession(){
+  var v=document.getElementById("calWhen").value;
+  if(!v)return;
+  var c=calCandidates(+new Date(v));
+  if(!c.length||CAL_PICK==null||!c[CAL_PICK])return;
+  var pick=c[CAL_PICK], cfs=parseFloat(document.getElementById("calCfs").value);
+  var a=calLoad();
+  a.push({when:+new Date(v), tideT:pick.t, tideV:pick.v,
+          lag:pick.lag, mph:pick.mph, cfs:isNaN(cfs)?null:cfs});
+  a.sort(function(x,y){return x.when-y.when;});
+  calSave(a); CAL_PICK=null; renderCalib();
+}
+
 function renderWhy(){
   document.getElementById("whyBody").innerHTML=
     "<p><b>1. The ocean push.</b> Sockeye enter the Kenai in waves on the high tide down at Cook Inlet.</p>"+
@@ -1021,7 +1196,7 @@ document.getElementById("saveSettings").onclick=function(){
   S.lagLo=parseFloat(document.getElementById("setLagLo").value)||DEFAULTS.lagLo;
   S.lagHi=parseFloat(document.getElementById("setLagHi").value)||DEFAULTS.lagHi;
   saveJSON("kenai_settings_v1",S);
-  renderSpot(); renderWhy(); renderChips(); loadTides();
+  renderSpot(); renderWhy(); renderChips(); renderCalib(); loadTides();
   document.getElementById("settings").open=false;
 };
 
@@ -1119,7 +1294,7 @@ function renderChips(){
       var p=PRESETS.filter(function(x){return x.key===b.dataset.k;})[0];
       S.lagLo=p.lo; S.lagHi=p.hi;
       saveJSON("kenai_settings_v1",S);
-      fillSettings(); renderChips(); renderHero(); renderWhy();
+      fillSettings(); renderChips(); renderHero(); renderWhy(); renderCalib();
     };
   });
   document.getElementById("lagNow").innerHTML=
@@ -1139,7 +1314,7 @@ document.getElementById("useHT").onclick=function(){
 };
 document.getElementById("retryTide").onclick=loadTides;
 
-renderSpot(); renderWindowLabel(); renderWhy(); fillSettings(); renderChips();
+renderSpot(); renderWindowLabel(); renderWhy(); fillSettings(); renderChips(); renderCalib();
 loadTides(); loadSonar(); loadRiver();
 var rzT;
 window.addEventListener("resize",function(){clearTimeout(rzT);rzT=setTimeout(renderBest,180);});
