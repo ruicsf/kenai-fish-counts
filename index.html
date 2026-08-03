@@ -1628,22 +1628,106 @@ var USGS_SITE = "15266300";
 var USGS_PAGE = "https://waterdata.usgs.gov/monitoring-location/USGS-" + USGS_SITE + "/";
 var RECOMMENDED = null;
 
-// USGS returns tab-separated text with comment lines and a units row.
-function parseRdb(text) {
-  var lines = text.replace(/\r/g, "").split("\n")
-    .filter(function (l) { return l && l.charAt(0) !== "#"; });
-  if (lines.length < 3) return null;
+// -- Where the numbers come from -------------------------------------------
+// USGS retired the old waterservices.usgs.gov APIs. They said degradation
+// could begin August 2026 and it did: the endpoints started returning HTML
+// error pages instead of JSON, which showed up here as
+// "Unexpected token '<'". Full decommission is Q1 2027.
+//
+// Replacements, from the USGS migration guide:
+//   /nwis/iv    -> ogcapi/v0/collections/latest-continuous   (current flow)
+//   /nwis/stat  -> statistics/v0/observationNormals          (percentiles)
+//
+// The two are fetched separately on purpose. The statistics API is still in
+// beta, so if it changes shape or goes away, the current flow reading still
+// works and you can pick a pace by eye.
 
-  var headers = lines[0].split("\t");
-  var rows = [];
-  for (var i = 2; i < lines.length; i++) {          // line 1 is units, skip it
-    var cells = lines[i].split("\t");
-    if (cells.length < headers.length) continue;
-    var row = {};
-    for (var j = 0; j < headers.length; j++) row[headers[j]] = cells[j];
-    rows.push(row);
+function currentFlowURL() {
+  return "https://api.waterdata.usgs.gov/ogcapi/v0/collections/latest-continuous/items"
+       + "?f=json"
+       + "&monitoring_location_id=USGS-" + USGS_SITE
+       + "&parameter_code=00060";
+}
+
+// Day-of-year percentiles for today's calendar date. Dates are MM-DD here,
+// not full dates: these are normals across the whole period of record.
+function flowNormalsURL() {
+  var today = new Date();
+  var mmdd = pad(today.getMonth() + 1) + "-" + pad(today.getDate());
+  return "https://api.waterdata.usgs.gov/statistics/v0/observationNormals"
+       + "?monitoring_location_id=USGS-" + USGS_SITE
+       + "&parameter_code=00060"
+       + "&normal_type=DOY"
+       + "&computation_type=percentile"
+       + "&start_date=" + mmdd
+       + "&end_date=" + mmdd;
+}
+
+// Pull the newest reading out of a GeoJSON FeatureCollection.
+function readCurrentFlow(json) {
+  var features = (json && json.features) || [];
+  var newest = null;
+
+  features.forEach(function (f) {
+    var props = f && f.properties;
+    if (!props) return;
+    var value = parseFloat(props.value);
+    if (isNaN(value) || value <= -999) return;      // -999999 means no reading
+    var when = Date.parse(props.time) || 0;
+    if (!newest || when > newest.when) newest = { cfs: value, when: when };
+  });
+
+  return newest ? newest.cfs : null;
+}
+
+// The statistics API returns percentiles as two parallel arrays rather than
+// one record per percentile, so the levels and the numbers have to be zipped
+// back together by position:
+//
+//   percentiles: ["5","10","25","50","75","90","95"]
+//   values:      ["11310.0", ... ,"13000.0","13900.0","15500.0","17080.0", ...]
+//
+// Those sit at features[].properties.data[].values[]. The service is still in
+// beta, so every step is checked rather than assumed, and anything missing
+// returns null so the card falls back to showing flow alone.
+function readFlowNormals(json) {
+  var features = (json && json.features) || [];
+
+  for (var f = 0; f < features.length; f++) {
+    var groups = (features[f].properties && features[f].properties.data) || [];
+
+    for (var g = 0; g < groups.length; g++) {
+      if (groups[g].parameter_code !== "00060") continue;   // discharge only
+      var entries = groups[g].values || [];
+
+      for (var e = 0; e < entries.length; e++) {
+        var entry = entries[e];
+        if (entry.computation && entry.computation !== "percentile") continue;
+
+        var levels = entry.percentiles || [];
+        var numbers = entry.values || [];
+        if (levels.length !== numbers.length || !levels.length) continue;
+
+        var byLevel = {};
+        for (var i = 0; i < levels.length; i++) {
+          var level = Math.round(parseFloat(levels[i]));
+          var value = parseFloat(numbers[i]);
+          if (!isNaN(level) && !isNaN(value)) byLevel[level] = value;
+        }
+
+        var have = byLevel[25] != null && byLevel[50] != null
+                && byLevel[75] != null && byLevel[90] != null;
+        if (!have) continue;
+
+        return {
+          p25: byLevel[25], p50: byLevel[50],
+          p75: byLevel[75], p90: byLevel[90],
+          yrs: entry.sample_count || null
+        };
+      }
+    }
   }
-  return rows;
+  return null;
 }
 
 function classify(cfs, stats) {
@@ -1653,64 +1737,68 @@ function classify(cfs, stats) {
   return PRESETS[3];
 }
 
-function loadRiver() {
-  var currentURL = "https://waterservices.usgs.gov/nwis/iv/?format=json&sites=" + USGS_SITE
-                 + "&parameterCd=00060&period=P1D&siteStatus=all";
-  var statsURL = "https://waterservices.usgs.gov/nwis/stat/?format=rdb&sites=" + USGS_SITE
-               + "&statReportType=daily&statTypeCd=all&parameterCd=00060";
+function fetchJSON(url) {
+  return fetch(url).then(function (res) {
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    return res.text();
+  }).then(function (text) {
+    // An HTML error page parsed as JSON gives "Unexpected token '<'", which
+    // tells you nothing. Name the real problem instead.
+    if (text.trim().charAt(0) === "<") throw new Error("server returned a web page, not data");
+    return JSON.parse(text);
+  });
+}
 
-  Promise.all([
-    fetch(currentURL).then(function (r) { return r.json(); }),
-    fetch(statsURL).then(function (r) { return r.text(); })
-  ]).then(function (results) {
-    var readings = results[0].value.timeSeries[0].values[0].value;
-    var cfs = null;
-    for (var i = readings.length - 1; i >= 0; i--) {
-      var v = parseFloat(readings[i].value);
-      if (!isNaN(v) && v > -999) { cfs = v; break; }   // -999999 means no reading
-    }
-    if (cfs === null) throw new Error("no current reading");
+function renderRiver(cfs, stats) {
+  var gaugeLink = '<a href="' + USGS_PAGE + '" target="_blank" rel="noopener">'
+                + "Live gauge \u2197</a>";
+  var today = new Date();
 
-    var rows = parseRdb(results[1]);
-    if (!rows) throw new Error("no stats");
-
-    var today = new Date();
-    var month = today.getMonth() + 1;
-    var day = today.getDate();
-    var todayRow = null;
-    for (var k = 0; k < rows.length; k++) {
-      if (parseInt(rows[k].month_nu, 10) === month && parseInt(rows[k].day_nu, 10) === day) {
-        todayRow = rows[k];
-        break;
-      }
-    }
-    if (!todayRow) throw new Error("no stats for today");
-
-    var stats = {
-      p25: +todayRow.p25_va, p50: +todayRow.p50_va,
-      p75: +todayRow.p75_va, p90: +todayRow.p90_va,
-      yrs: todayRow.count_nu
-    };
-    RECOMMENDED = classify(cfs, stats);
-
-    var pct = Math.round((cfs / stats.p50 - 1) * 100);
-    var vs = pct === 0
-      ? "right at the median"
-      : Math.abs(pct) + "% " + (pct > 0 ? "above" : "below") + " the median";
-
+  if (!stats) {
+    // Flow but no percentiles: still worth showing, just without the
+    // "high for early August specifically" comparison.
+    RECOMMENDED = null;
     setHTML("riverBody",
         '<div class="gauge"><span class="big">' + commas(cfs)
-        + ' <span style="font-size:14px;opacity:.6">cfs</span></span>'
-        + '<span class="vs">' + vs + " for "
+        + ' <span style="font-size:14px;opacity:.6">cfs</span></span></div>'
+      + '<div class="note">Historical percentiles are unavailable right now, so '
+        + "there is no comparison against a typical "
         + today.toLocaleDateString([], { month: "short", day: "numeric" })
-        + " (" + stats.yrs + " yrs of record)</span></div>"
-      + '<div class="note">Typical range today is ' + commas(stats.p25)
-        + "\u2013" + commas(stats.p75) + " cfs. Recommended pace: "
-        + '<b style="color:var(--tide)">' + RECOMMENDED.label + "</b>, "
-        + RECOMMENDED.lo + "\u2013" + RECOMMENDED.hi + " hrs. "
-        + '<a href="' + USGS_PAGE + '" target="_blank" rel="noopener">Live gauge \u2197</a></div>');
-
+        + ". Pick a pace below by eye. " + gaugeLink + "</div>");
     renderChips();
+    return;
+  }
+
+  RECOMMENDED = classify(cfs, stats);
+  var pct = Math.round((cfs / stats.p50 - 1) * 100);
+  var vs = pct === 0
+    ? "right at the median"
+    : Math.abs(pct) + "% " + (pct > 0 ? "above" : "below") + " the median";
+
+  setHTML("riverBody",
+      '<div class="gauge"><span class="big">' + commas(cfs)
+      + ' <span style="font-size:14px;opacity:.6">cfs</span></span>'
+      + '<span class="vs">' + vs + " for "
+      + today.toLocaleDateString([], { month: "short", day: "numeric" })
+      + (stats.yrs ? " (" + stats.yrs + " yrs of record)" : "") + "</span></div>"
+    + '<div class="note">Typical range today is ' + commas(stats.p25)
+      + "\u2013" + commas(stats.p75) + " cfs. Recommended pace: "
+      + '<b style="color:var(--tide)">' + RECOMMENDED.label + "</b>, "
+      + RECOMMENDED.lo + "\u2013" + RECOMMENDED.hi + " hrs. " + gaugeLink + "</div>");
+
+  renderChips();
+}
+
+function loadRiver() {
+  fetchJSON(currentFlowURL()).then(function (json) {
+    var cfs = readCurrentFlow(json);
+    if (cfs == null) throw new Error("no current reading");
+
+    // Percentiles are a bonus. Failing to get them must not lose the flow.
+    fetchJSON(flowNormalsURL())
+      .then(function (statsJson) { renderRiver(cfs, readFlowNormals(statsJson)); })
+      .catch(function () { renderRiver(cfs, null); });
+
   }).catch(function (err) {
     RECOMMENDED = null;
     setHTML("riverBody",
