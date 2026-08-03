@@ -237,6 +237,11 @@
   <p class="note" id="lagNow"></p>
 </section>
 
+<details id="calib">
+  <summary>Calibration &mdash; narrow your window</summary>
+  <div class="body" id="calibBody"></div>
+</details>
+
 <details>
   <summary>How the timing works</summary>
   <div class="body note" id="whyBody"></div>
@@ -272,879 +277,1860 @@
 <script>
 "use strict";
 
-var HIST = {
-2025:[7312,7152,8233,12744,14263,15322,23075,29398,43876,45638,24756,30484,24964,23100,51443,108708,121741,118413,163792,212676,247783,177441,191691,159649,129762,170918,249944,175825,104694,129028,149772,195096,138734,115164,108821,108352,64587,75746,79234,49203,41336,52654,49936,35230,37225,29034,50151,32597,28567,20827],
-2024:[6366,5484,9630,13590,18120,32928,35551,56130,48342,34416,25675,21378,26940,18882,21360,30725,191328,154944,123186,69468,32229,24936,28009,92949,157434,102624,74358,67674,70914,53434,46566,48884,37498,33726,24139,22052,17847,27839,6858,11937],
-2023:[3960,3902,2598,3132,3887,3588,3084,4247,6791,8064,7950,4686,2838,5250,20616,54971,69111,46860,26100,29607,32110,17576,32124,51468,120363,195029,146970,132852,137844,74148,43109,33143,40623,44961,53525,51753,44304,44450,44620,50948,37540,37956,33768,24992,30018,40847,31276],
-2022:[5034,4212,5796,7314,7386,10341,12973,13884,13992,21424,20597,8094,9636,5556,5225,18780,45558,39697,74328,189420,155774,99324,79950,101376,54139,44166,56110,32859,24474,24594,16902,31619,36152,21493,26351,29960,19915,23752,21717,25924,21212,26198,26817,17310,6190,12872,11353]
-};
-var HIST_YEARS=[2025,2024,2023,2022];
+/* ===========================================================================
+   KENAI RUN TIMER
+   ---------------------------------------------------------------------------
+   Predicts when late-run sockeye reach the fishing holes at river mile 47.
+
+   The idea in three steps:
+     1. Sockeye enter the river in waves on the high tide at the mouth.
+     2. Each wave takes roughly 31 to 47 hours to travel 47 miles upstream.
+        Because that spread is wide, waves overlap and blend together.
+     3. ADF&G's sonar count at river mile 19 tells us how many fish are in
+        each wave. Tides give the SHAPE of the day, the count gives the SIZE.
+
+   Reading order. The file runs top to bottom in these sections:
+
+     1  SETTINGS        saved preferences and one-time migrations
+     2  SMALL HELPERS   dates, clocks, number formatting
+     3  TIDES           fetching high tides from NOAA
+     4  ARRIVAL CURVE   the core model: tides in, fish-per-hour out
+     5  SONAR COUNTS    fetching daily counts, and the run trend
+     6  SCALING         turning the curve shape into real fish numbers
+     7  DISPLAY: TOP CARD
+     8  DISPLAY: CHART
+     9  DISPLAY: WINDOW LIST
+    10  DISPLAY: RUN STRENGTH
+    11  DISPLAY: RIVER FLOW
+    12  CALIBRATION     narrowing the 31-47 window with real sessions
+    13  SETTINGS PANEL
+    14  STARTUP
+
+   Names used throughout:
+     lag        hours from high tide at the mouth to fish reaching the spot
+     intensity  raw tide-driven arrival shape, arbitrary units
+     p.r        one sample's intensity as a fraction of the window maximum
+     p.v        one sample as FISH PER HOUR. This is what gets printed.
+                Anything shown to the user must be decided from p.v, never
+                from p.r, or the words and the graph disagree.
+   =========================================================================== */
+
+
+/* ===========================================================================
+   1. SETTINGS
+   =========================================================================== */
 
 // River geometry, from ADF&G published mile markers. Kenai Keys is RM 44.6
 // and Thompson's Hole RM 45.8-46.3; the holes sit ~1.7 mi straight-line
 // upstream of Dot's, which is ~2.5 river miles once the meander is counted.
-var SPOT_RM=47;          // your holes, miles from the mouth
-var SONAR_RM=19;         // ADF&G DIDSON sonar
-var SONAR_FRAC=SONAR_RM/SPOT_RM;
-// "Big tide" was relative to the average of whatever tides happened to be in the
-// fetch window, so the same tide gained or lost the badge as the window slid.
-// Absolute threshold instead: stable, and actually means "pushes a lot of water".
-var BIG_TIDE_FT=16.0;
+var SPOT_RM = 47;                        // the holes, miles from the mouth
+var SONAR_RM = 19;                       // ADF&G DIDSON sonar
+var SONAR_FRAC = SONAR_RM / SPOT_RM;     // how far along the trip the sonar sits
+
+// "Big tide" used to be relative to the average of whatever tides happened to
+// be in the fetch window, so the same tide gained or lost the badge as the
+// window slid. Absolute threshold instead: stable, and actually means "pushes
+// a lot of water".
+var BIG_TIDE_FT = 16.0;
+
 // At RM 47 the 16 hr lag window smears tides 12.4 hrs apart into each other, so
-// most days the best hour beats the worst by only a few percent. Naming a "peak"
-// then promises a decision the model cannot support.
-var FLAT_AT=0.20;
+// most days the best hour beats the worst by only a few percent. Naming a
+// "peak" then promises a decision the model cannot support.
+var FLAT_AT = 0.20;
 
-var DEFAULTS={
-  station:"9455742",
-  lagLo:31, lagHi:47, geoRM:47
-};
-var RAW=loadJSON("kenai_settings_v1",{})||{};
-var S=Object.assign({},DEFAULTS,RAW); delete S.highWater; delete S.bank; delete S.spots; delete S.spotIdx; delete S.spot;
-// Lag saved before the RM 30.5 -> 47 correction would silently override the new
-// defaults. Test the RAW saved object, not the merged one, or the default fills
-// geoRM in and the check can never fire. Resets once, then leaves edits alone.
-if(RAW.geoRM!==SPOT_RM){ S.lagLo=DEFAULTS.lagLo; S.lagHi=DEFAULTS.lagHi; saveJSON("kenai_settings_v1",S); }
-// One-time move off Nikiski: Kenai City Pier sits at the river mouth, which is
-// the reference point the lag is measured from. Pick Nikiski again if you want it.
-if(!S.stationV2){ if(S.station==="9455760")S.station="9455742"; S.stationV2=true; saveJSON("kenai_settings_v1",S); }
-
-function loadJSON(k,f){try{var v=localStorage.getItem(k);return v?JSON.parse(v):f;}catch(e){return f;}}
-function saveJSON(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
-
-var MS_H=3600*1000;
-function ymd(d){return d.getFullYear()+pad(d.getMonth()+1)+pad(d.getDate());}
-function pad(n){return String(n).padStart(2,"0");}
-function parseNoaa(t){return new Date(t.replace(" ","T"));}
-function jul1Index(d){var j=new Date(d.getFullYear(),6,1);return Math.floor((new Date(d.getFullYear(),d.getMonth(),d.getDate())-j)/86400000);}
-function clock(d){var h=d.getHours(),m=d.getMinutes(),ap=h<12?"AM":"PM";h=h%12||12;return h+":"+pad(m)+" "+ap;}
-function dayName(d){var n=new Date();var t=new Date(n.getFullYear(),n.getMonth(),n.getDate());var dd=new Date(d.getFullYear(),d.getMonth(),d.getDate());var diff=Math.round((dd-t)/86400000);if(diff===0)return"Today";if(diff===1)return"Tmrw";return["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][d.getDay()];}
-function fmtDur(ms){if(ms<0)ms=0;var tot=Math.floor(ms/1000);var h=Math.floor(tot/3600),m=Math.floor((tot%3600)/60);if(h>=1)return h+"h "+pad(m)+"m";var s=tot%60;return m+"m "+pad(s)+"s";}
-function commas(n){return Math.round(n).toLocaleString("en-US");}
-
-var HIGH_TIDES=[];
-function buildWindows(){
-  var lagLo=S.lagLo, lagHi=S.lagHi;
-  var now=new Date();
-  return HIGH_TIDES.map(function(x){var ht=x.t;return {
-    ht:ht, htV:x.v, htBig:(x.v!=null&&x.v>=BIG_TIDE_FT),
-    peak:new Date(+ht+(lagLo+lagHi)/2*MS_H),
-    sonarStart:new Date(+ht+lagLo*SONAR_FRAC*MS_H),
-    sonarEnd:new Date(+ht+lagHi*SONAR_FRAC*MS_H),
-    arrStart:new Date(+ht+lagLo*MS_H),
-    arrEnd:new Date(+ht+lagHi*MS_H)
-  };}).filter(function(w){return w.arrEnd>now;}).sort(function(a,b){return a.arrStart-b.arrStart;});
-}
-
-function renderWindowLabel(){
-  var el=document.getElementById("bestLabel"); if(!el)return;
-  el.textContent="Best bets \u00b7 last "+BACK_HRS+" & next "+FWD_HRS+" hrs";
-}
-function renderSpot(){
-  document.getElementById("spotline").textContent="Fishing Holes \u00b7 RM "+SPOT_RM+", "+SPOT_RM+" mi upstream from the mouth";
-}
-// Below a divider in the hero: what is reaching the spot right now, and the
-// count driving it. The current forecast is the thing most worth seeing first,
-// and the sonar figure is what actually sets the scale of everything else.
-function renderHeroNow(showRate,note){
-  var el=document.getElementById("heroNow"); if(!el)return;
-  var f=fishScale(), out="";
-  if(showRate){
-    out+='<div class="lbl">Right now</div>'+
-      '<div class="v num">'+
-      (f?"~"+fishFmt(shownAtTime(Date.now()))+" fish/hr"
-        :Math.round(relAt(Date.now())*100)+"% on tide timing")+'</div>';
-  }
-  if(note) out+='<div class="sub note2">'+note+'</div>';
-  if(LAST_SONAR&&LAST_SONAR.d!=null){
-    out+='<div class="sub num">'+commas(LAST_SONAR.d)+'/day at the sonar on '+
-      (LAST_SONAR.o.getMonth()+1)+'/'+LAST_SONAR.o.getDate()+
-      (f&&f.projected&&Math.abs(f.trend-1)>0.03
-        ? ' \u00b7 '+(f.trend<1?"falling":"rising")+' '+
-          Math.round(Math.abs(f.trend-1)*100)+'% a day'
-        : '')+
-      (LAST_SONAR.l?'':' \u00b7 entered by hand')+'</div>';
-  }else{
-    out+='<div class="sub">No sonar count yet. Add one in Run strength to see fish/hr.</div>';
-  }
-  el.innerHTML=out?'<div class="nowbox">'+out+'</div>':"";
-}
-// Where this hour sits on TIDE TIMING alone, ignoring the run trend.
-// Comparing against everything ahead is useless on a falling run: the best
-// thing ahead is always this instant, so it reads 100% every hour of every
-// day. The two effects answer different questions. The trend says go sooner
-// (nothing to decide). The tide says which hours within a day are better,
-// which is the only part you can act on. Returns null without a curve.
-//
-// The window is the CALENDAR DAY, not 12 hrs either side of now. A window
-// hung off `now` slides forward every minute, so its ends are never real
-// peaks, and the reported best hour crept along with the clock: two
-// screenshots a minute apart read 12:04 AM and 12:03 AM. Fixed endpoints mean
-// the answer holds still all day, and "today's best" means what it says.
-function tideStanding(){
-  var c=CURVE||curveData(); if(!c.fine.length)return null;
-  var now=Date.now(), n=new Date(now);
-  function scan(dayOffset){
-    var s=new Date(n.getFullYear(),n.getMonth(),n.getDate()+dayOffset);
-    var e=+s+24*3600e3, hi=0, lo=Infinity, best=null;
-    for(var t=+s;t<e;t+=15*60000){
-      var v=intensityAt(t);
-      if(v>hi){hi=v; best=t;}
-      if(v<lo) lo=v;
-    }
-    return hi>0?{hi:hi,lo:lo,best:best}:null;
-  }
-  var d=scan(0); if(!d)return null;
-  // Once today's peak is behind you, pointing at it is no use. Roll forward.
-  var tomorrow=false;
-  if(d.best<now-45*60000){
-    var t2=scan(1);
-    if(t2){ d=t2; tomorrow=true; }
-  }
-  var nowI=intensityAt(now);
-  return {pct:Math.min(100,Math.round(nowI/d.hi*100)),
-          spread:(d.hi-d.lo)/d.hi,
-          bestT:d.best,
-          bestAhead:d.best>now+45*60000,
-          tomorrow:tomorrow};
-}
-var heroCountdownTarget=null;
-function renderHero(){
-  renderSonarDayNote();
-  var hero=document.getElementById("hero");
-  var wins=buildWindows();
-  var now=new Date();
-  if(!wins.length){
-    hero.className="card"; document.getElementById("heroState").textContent="No tide data";
-    document.getElementById("heroBig").textContent="\u2014";
-    document.getElementById("heroRange").textContent="";
-    document.getElementById("heroMeta").textContent="Load a high tide below to compute your windows.";
-    renderHeroNow(false,"");
-    heroCountdownTarget=null; renderBest(); return;
-  }
-  var open=wins.filter(function(w){return w.arrStart<=now && now<=w.arrEnd;})[0];
-  var next=wins.filter(function(w){return w.arrStart>now;})[0];
-  function rangeStr(w){return clock(w.arrStart)+" \u2013 "+clock(w.arrEnd);}
-
-  // The peak is the headline: where overlapping waves stack highest.
-  var cd=curveData();
-  var nowR=cd.nowR;
-  // Flat day: no peak worth naming. Say so and get out before peak detection.
-  var spread=flatness();
-  if(spread!=null&&spread<FLAT_AT){
-    var fsF=fishScale();
-    hero.className="card flat";
-    document.getElementById("heroState").textContent="Timing flat \u00b7 next 24 hrs";
-    document.getElementById("heroBig").textContent=
-      fsF?"~"+fishFmt(fsF.perHrAt(nowR,Date.now()))+" fish/hr":Math.round(nowR*100)+"%";
-    document.getElementById("heroRange").innerHTML="";
-    document.getElementById("heroMeta").innerHTML='Best hour beats worst by only <b>'+
-      Math.round(spread*100)+'%</b> today, so tide timing is not worth planning around. '+
-      'Fish when you can. '+
-      (fsF?'What matters is the run: '+commas(fsF.daily)+'/day at the sonar.'
-         :'Add a sonar count in Run strength to see fish/hr.');
-    renderHeroNow(false,"");
-    heroCountdownTarget=null;
-    renderTimeline(wins,open); renderBest(); return;
-  }
-  // The best time ahead, measured on the numbers the app prints. Reading this
-  // off raw tide shape produced a "next peak" carrying FEWER fish than right
-  // now, which is what made the hero and the graph disagree.
-  var fsH=fishScale();
-  var nowShown=fsH?fsH.perHrAt(nowR,+now):nowR;
-  var fut=cd.fine.filter(function(p){return p.t>=+now&&p.t<=+now+FWD_HRS*3600e3;});
-  var best=fut.reduce(function(b,p){return (!b||p.v>b.v)?p:b;},null);
-  if(!best){ renderHeroNow(true,""); renderTimeline(wins,open); renderBest(); return; }
-  // If nothing ahead beats right now, right now IS the best. Saying "next peak"
-  // in that situation is simply false.
-  var isNow=(best.t-(+now)<=45*60000)||(nowShown>=best.v);
-  var shownBest=isNow?nowShown:best.v;
-  var d=new Date(isNow?+now:best.t);
-  var src=wins.slice().sort(function(a,b){return Math.abs(a.peak-d)-Math.abs(b.peak-d);})[0];
-  var pct=shownBest>0?Math.round(nowShown/shownBest*100):0;
-  // Two separate facts, kept separate. Mashing them into one percentage is what
-  // pinned the old line at 100% all day long.
-  var ts=tideStanding();
-  var note="";
-  if(ts){
-    if(ts.spread<0.10){
-      note='Tide timing barely moves things '+(ts.tomorrow?'tomorrow':'today')+
-        ', about <b>'+Math.round(ts.spread*100)+
-        '%</b> between the best and worst hour. Any hour will do.';
-    }else{
-      var when=ts.tomorrow?'tomorrow\u2019s best':'today\u2019s best';
-      note='On tide timing this hour is <b>'+ts.pct+'%</b> of '+when+
-        (ts.bestAhead?', which comes at <b>'+clock(new Date(ts.bestT))+
-           (ts.tomorrow?' '+dayName(new Date(ts.bestT)):'')+'</b>.'
-         :ts.pct>=95?', and you are on it.'
-         :', which has passed.');
-    }
-    if(src) note+=' The fish arriving now rode the '+clock(src.ht)+
-      (src.htV!=null?" ("+src.htV.toFixed(1)+" ft)":"")+' high tide at the mouth.';
-  }else if(src){
-    note='The fish arriving now rode the '+clock(src.ht)+
-      (src.htV!=null?" ("+src.htV.toFixed(1)+" ft)":"")+' high tide at the mouth.';
-  }
-  document.getElementById("heroMeta").innerHTML="";
-
-  if(isNow){
-    hero.className="card go";
-    document.getElementById("heroState").innerHTML='<span class="pulse">\u25cf</span> Best right now';
-    document.getElementById("heroBig").textContent=
-      fsH?"~"+fishFmt(nowShown)+" fish/hr":Math.round(nowShown*100)+"%";
-    document.getElementById("heroRange").innerHTML=
-      open?'<span class="chip fit">window runs to '+clock(open.arrEnd)+'</span>':"";
-    renderHeroNow(false,note);
-    heroCountdownTarget=null;
-  }else{
-    hero.className="card next";
-    document.getElementById("heroState").textContent="Best ahead \u00b7 "+dayName(d);
-    document.getElementById("heroBig").textContent=clock(d);
-    document.getElementById("heroRange").innerHTML='in <span id="cd" class="num"></span> '+
-      '<span class="chip pk">'+(fsH?"~"+fishFmt(best.v)+" fish/hr":
-        Math.round(best.v*100)+"% on tide timing")+'</span>';
-    renderHeroNow(true,note);
-    heroCountdownTarget={el:"cd",time:d};
-  }
-  renderTimeline(wins,open);
-  renderBest();
-}
-// Arrivals from one tide spread out as a bell, not a flat block. Overlapping
-// bells from consecutive tides are what create the real peaks and lulls.
-function lagCenter(){return (S.lagLo+S.lagHi)/2;}
-function lagSigma(){return Math.max(1.5,(S.lagHi-S.lagLo)/2.5);}
-function intensityAt(ms){
-  var c=lagCenter()*MS_H, sig=lagSigma();
-  return HIGH_TIDES.reduce(function(a,x){
-    var w=(x.v==null)?2.5:Math.max(0.2,x.v-12);
-    var dh=(ms-(+x.t+c))/MS_H;
-    return a+w*Math.exp(-dh*dh/(2*sig*sig));
-  },0);
-}
 // How much of the curve to draw. Three other things derive from BACK_HRS: the
 // tide fetch window, how many samples become one bar, and the legend text.
 // Change these two numbers and the rest follows.
-var BACK_HRS=48, FWD_HRS=48;
-function buildCurve(backHours,fwdHours,stepMin){
-  var now=Date.now(),pts=[],nowIdx=0;
+var BACK_HRS = 48;
+var FWD_HRS = 48;
+
+var DAILY_DAYS = 10;                     // days of history in the daily count chart
+
+var DEFAULTS = {
+  station: "9455742",
+  lagLo: 31,
+  lagHi: 47,
+  geoRM: 47
+};
+
+function loadJSON(key, fallback) {
+  try {
+    var raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch (e) {
+    return fallback;
+  }
+}
+
+function saveJSON(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (e) {
+    // Private browsing and full storage both throw here. Losing a saved
+    // preference is not worth breaking the page over.
+  }
+}
+
+var SAVED = loadJSON("kenai_settings_v1", {}) || {};
+var S = Object.assign({}, DEFAULTS, SAVED);
+
+// Settings from older versions that no longer exist.
+delete S.highWater;
+delete S.bank;
+delete S.spots;
+delete S.spotIdx;
+delete S.spot;
+
+// Migration 1: lag values saved before the RM 30.5 -> 47 correction would
+// silently override the new defaults. Test the SAVED object, not the merged
+// one, or the default fills geoRM in and the check can never fire.
+if (SAVED.geoRM !== SPOT_RM) {
+  S.lagLo = DEFAULTS.lagLo;
+  S.lagHi = DEFAULTS.lagHi;
+  saveJSON("kenai_settings_v1", S);
+}
+
+// Migration 2: Kenai City Pier sits at the river mouth, which is the reference
+// point the lag is measured from. Nikiski can be picked again in Settings.
+if (!S.stationV2) {
+  if (S.station === "9455760") S.station = "9455742";
+  S.stationV2 = true;
+  saveJSON("kenai_settings_v1", S);
+}
+
+
+/* ===========================================================================
+   2. SMALL HELPERS
+   =========================================================================== */
+
+var MS_H = 3600 * 1000;                  // one hour in milliseconds
+
+function pad(n) {
+  return String(n).padStart(2, "0");
+}
+
+function ymd(date) {
+  return date.getFullYear() + pad(date.getMonth() + 1) + pad(date.getDate());
+}
+
+function dateKey(date) {
+  return date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate());
+}
+
+function parseNoaa(text) {
+  return new Date(text.replace(" ", "T"));
+}
+
+function sameDay(a, b) {
+  return a.getFullYear() === b.getFullYear()
+      && a.getMonth() === b.getMonth()
+      && a.getDate() === b.getDate();
+}
+
+function startOfDay(date, dayOffset) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + (dayOffset || 0));
+}
+
+// Days since July 1, used to line this year's count up against past years.
+function jul1Index(date) {
+  var jul1 = new Date(date.getFullYear(), 6, 1);
+  return Math.floor((startOfDay(date) - jul1) / 86400000);
+}
+
+// "2:05 PM"
+function clock(date) {
+  var hour = date.getHours();
+  var suffix = hour < 12 ? "AM" : "PM";
+  return (hour % 12 || 12) + ":" + pad(date.getMinutes()) + " " + suffix;
+}
+
+var WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+// "Today", "Tmrw", or a weekday. Forward-looking only.
+function dayName(date) {
+  var days = Math.round((startOfDay(date) - startOfDay(new Date())) / 86400000);
+  if (days === 0) return "Today";
+  if (days === 1) return "Tmrw";
+  return WEEKDAYS[date.getDay()];
+}
+
+// dayName only labels today and forward; this covers yesterday and further back.
+function pastDayName(date) {
+  var days = Math.round((startOfDay(new Date()) - startOfDay(date)) / 86400000);
+  var mmdd = pad(date.getMonth() + 1) + "/" + pad(date.getDate());
+  if (days === 0) return "Today (" + mmdd + ")";
+  if (days === 1) return "Yesterday (" + mmdd + ")";
+  return WEEKDAYS[date.getDay()] + " " + mmdd;
+}
+
+// "3h 05m" or "5m 12s"
+function fmtDur(ms) {
+  if (ms < 0) ms = 0;
+  var totalSec = Math.floor(ms / 1000);
+  var hours = Math.floor(totalSec / 3600);
+  var mins = Math.floor((totalSec % 3600) / 60);
+  if (hours >= 1) return hours + "h " + pad(mins) + "m";
+  return mins + "m " + pad(totalSec % 60) + "s";
+}
+
+function commas(n) {
+  return Math.round(n).toLocaleString("en-US");
+}
+
+// Fish counts are estimates, so round off precision the model does not have.
+function fishFmt(n) {
+  if (n >= 10000) return commas(Math.round(n / 100) * 100);
+  if (n >= 1000) return commas(Math.round(n / 10) * 10);
+  return commas(n);
+}
+
+function byId(id) {
+  return document.getElementById(id);
+}
+
+function setText(id, text) {
+  var el = byId(id);
+  if (el) el.textContent = text;
+}
+
+function setHTML(id, html) {
+  var el = byId(id);
+  if (el) el.innerHTML = html;
+}
+
+
+/* ===========================================================================
+   3. TIDES
+   =========================================================================== */
+
+var HIGH_TIDES = [];                     // [{t: Date, v: feet}], from NOAA
+
+function tideURL() {
+  var now = new Date();
+  // Arrivals at the left edge of the chart were driven by tides BACK_HRS +
+  // lagHi + 3 sigma before now. Fetch that far or the oldest bars taper to
+  // nothing and read as a dead spell that never happened.
+  var daysBack = Math.ceil((BACK_HRS + S.lagHi + 3 * lagSigma()) / 24) + 1;
+  var begin = new Date(+now - daysBack * 24 * MS_H);
+  var end = new Date(+now + 3 * 24 * MS_H);
+
+  return "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter"
+       + "?product=predictions&application=kenai-run-timer"
+       + "&datum=MLLW"
+       + "&station=" + encodeURIComponent(S.station)
+       + "&time_zone=lst_ldt&units=english&interval=hilo&format=json"
+       + "&begin_date=" + ymd(begin)
+       + "&end_date=" + ymd(end);
+}
+
+function loadTides() {
+  byId("tideFallback").style.display = "none";
+
+  fetch(tideURL())
+    .then(function (res) { return res.json(); })
+    .then(function (json) {
+      if (!json.predictions || !json.predictions.length) {
+        throw new Error(json.error ? json.error.message : "No predictions");
+      }
+      HIGH_TIDES = json.predictions
+        .filter(function (p) { return p.type === "H"; })
+        .map(function (p) { return { t: parseNoaa(p.t), v: parseFloat(p.v) }; });
+      renderHero();
+      renderCalib();
+    })
+    .catch(function (err) {
+      byId("tideFallback").style.display = "block";
+      setText("tideErr", "Couldn't reach NOAA tides (" + err.message + "). "
+                       + "Enter a high tide by hand to compute windows offline.");
+      if (!HIGH_TIDES.length) renderHero();
+    });
+}
+
+// One arrival window per high tide: when those fish pass the sonar, and when
+// they reach the spot. Past windows are dropped.
+function buildWindows() {
+  var now = new Date();
+
+  return HIGH_TIDES.map(function (tide) {
+    var t = tide.t;
+    return {
+      ht: t,
+      htV: tide.v,
+      htBig: (tide.v != null && tide.v >= BIG_TIDE_FT),
+      peak: new Date(+t + (S.lagLo + S.lagHi) / 2 * MS_H),
+      sonarStart: new Date(+t + S.lagLo * SONAR_FRAC * MS_H),
+      sonarEnd: new Date(+t + S.lagHi * SONAR_FRAC * MS_H),
+      arrStart: new Date(+t + S.lagLo * MS_H),
+      arrEnd: new Date(+t + S.lagHi * MS_H)
+    };
+  })
+  .filter(function (w) { return w.arrEnd > now; })
+  .sort(function (a, b) { return a.arrStart - b.arrStart; });
+}
+
+
+/* ===========================================================================
+   4. ARRIVAL CURVE
+   ---------------------------------------------------------------------------
+   Arrivals from one tide spread out as a bell curve, not a flat block. Adding
+   up the overlapping bells from every tide gives the arrival shape.
+   =========================================================================== */
+
+function lagCenter() {
+  return (S.lagLo + S.lagHi) / 2;
+}
+
+// How spread out one tide's arrivals are. Wider lag range, wider bell.
+function lagSigma() {
+  return Math.max(1.5, (S.lagHi - S.lagLo) / 2.5);
+}
+
+// Fish reaching the spot at time t crossed the sonar this many hours earlier.
+function sonarBackHrs() {
+  return lagCenter() * (1 - SONAR_FRAC);
+}
+
+// Raw tide-driven arrival shape at one moment. Arbitrary units; section 6
+// converts it to fish per hour.
+function intensityAt(ms) {
+  var centre = lagCenter() * MS_H;
+  var sigma = lagSigma();
+
+  return HIGH_TIDES.reduce(function (total, tide) {
+    // Taller tides push more fish. Subtracting 12 ft makes an 18 ft tide count
+    // for far more than a 13 ft one, rather than only slightly more.
+    var weight = (tide.v == null) ? 2.5 : Math.max(0.2, tide.v - 12);
+    var hoursOff = (ms - (+tide.t + centre)) / MS_H;
+    return total + weight * Math.exp(-hoursOff * hoursOff / (2 * sigma * sigma));
+  }, 0);
+}
+
+function buildCurve(backHours, fwdHours, stepMin) {
+  var now = Date.now();
+  var step = stepMin * 60000;
   // Snap the grid to absolute time boundaries. Anchoring it to `now` made the
   // samples slide as the clock advanced, so the detected peak wobbled by a few
   // minutes on every re-render.
-  var step=stepMin*60000;
-  var start=Math.floor((now-backHours*3600e3)/step)*step;
-  var end=now+fwdHours*3600e3;
-  for(var t=start;t<=end;t+=step){
-    if(t<=now) nowIdx=pts.length;          // last sample at or before now
-    pts.push({t:t,i:intensityAt(t),past:t<now});
+  var start = Math.floor((now - backHours * 3600e3) / step) * step;
+  var end = now + fwdHours * 3600e3;
+
+  var points = [];
+  var nowIdx = 0;
+  for (var t = start; t <= end; t += step) {
+    if (t <= now) nowIdx = points.length;    // last sample at or before now
+    points.push({ t: t, i: intensityAt(t), past: t < now });
   }
-  var mx=Math.max.apply(null,pts.map(function(p){return p.i;}))||1;
-  pts.forEach(function(p){p.r=p.i/mx;});
-  pts.mx=mx; pts.nowIdx=nowIdx;
-  return pts;
+
+  var maxI = Math.max.apply(null, points.map(function (p) { return p.i; })) || 1;
+  points.forEach(function (p) { p.r = p.i / maxI; });
+  points.mx = maxI;
+  points.nowIdx = nowIdx;
+  return points;
 }
-var CURVE=null;
-function curveData(){
-  var fine=buildCurve(BACK_HRS,FWD_HRS,15);   // 15-min resolution, one source of truth
-  var now=Date.now();
-  var mx=fine.mx||1;
-  CURVE={fine:fine, peaks:[], future:[], mx:mx, nowIdx:fine.nowIdx||0,
-         // Snapping the grid to absolute time means the nearest sample can be up
-         // to one step old, so evaluate "right now" directly instead of reading it.
-         nowR:fine.length?intensityAt(now)/mx:0};
+
+var CURVE = null;
+
+function curveData() {
+  var fine = buildCurve(BACK_HRS, FWD_HRS, 15);
+  var now = Date.now();
+
+  CURVE = {
+    fine: fine,
+    peaks: [],
+    future: [],
+    mx: fine.mx || 1,
+    nowIdx: fine.nowIdx || 0,
+    // Snapping the grid to absolute time means the nearest sample can be up to
+    // one step old, so evaluate "right now" directly instead of reading it.
+    nowR: fine.length ? intensityAt(now) / (fine.mx || 1) : 0
+  };
+
   // Second pass. p.v is the number the app will actually print at that time:
   // tide shape scaled by the sonar count for the day those fish crossed. Peaks
   // and highlights must come from THIS, not from p.r. Picking them off raw tide
   // shape while printing p.v beside them produced a "next peak" with fewer fish
   // than right now, and starred the smaller of two listed peaks.
   // fishScale needs CURVE to exist, hence the second pass rather than inline.
-  var f=fishScale();
-  for(var i=0;i<fine.length;i++) fine[i].v=f?f.perHrAt(fine[i].r,fine[i].t):fine[i].r;
-  CURVE.peaks=findPeaks(fine).sort(function(a,b){return a.t-b.t;});
-  CURVE.future=CURVE.peaks.filter(function(p){return p.t>=now;});
+  var scale = fishScale();
+  for (var k = 0; k < fine.length; k++) {
+    fine[k].v = scale ? scale.perHrAt(fine[k].r, fine[k].t) : fine[k].r;
+  }
+
+  CURVE.peaks = findPeaks(fine).sort(function (a, b) { return a.t - b.t; });
+  CURVE.future = CURVE.peaks.filter(function (p) { return p.t >= now; });
   return CURVE;
 }
-function findPeaks(pts){
-  var out=[], W=4;   // must also be the highest point within an hour either side
-  // No boundary special-case. The curve starts BACK_HRS before now, so a peak
-  // in progress has real samples either side and the normal scan finds it.
-  // Treating index 0 as a peak whenever the curve was declining there invented
-  // a fresh "peak" at the current time on every single render.
-  for(var k=W;k<pts.length-W;k++){
-    if(!(pts[k].v>pts[k-1].v&&pts[k].v>=pts[k+1].v)) continue;
-    var top=true;
-    for(var j=k-W;j<=k+W;j++) if(j!==k&&pts[j].v>pts[k].v){ top=false; break; }
-    if(top) out.push(pts[k]);
+
+// A peak must beat its immediate neighbours AND be the highest point within an
+// hour either side. No boundary special-case: the curve starts BACK_HRS before
+// now, so a peak in progress has real samples on both sides. Treating index 0
+// as a peak whenever the curve was declining there invented a fresh "peak" at
+// the current time on every single render.
+function findPeaks(points) {
+  var WINDOW = 4;                        // 4 samples either side = 1 hour
+  var found = [];
+
+  for (var k = WINDOW; k < points.length - WINDOW; k++) {
+    var isLocalMax = points[k].v > points[k - 1].v && points[k].v >= points[k + 1].v;
+    if (!isLocalMax) continue;
+
+    var highestNearby = true;
+    for (var j = k - WINDOW; j <= k + WINDOW; j++) {
+      if (j !== k && points[j].v > points[k].v) { highestNearby = false; break; }
+    }
+    if (highestNearby) found.push(points[k]);
   }
-  return out.sort(function(a,b){return b.v-a.v;});
+
+  return found.sort(function (a, b) { return b.v - a.v; });
 }
-function relAt(ms){var c=CURVE||curveData();return c.mx?intensityAt(ms)/c.mx:0;}
-// How much the next 24 hrs actually varies, measured on the numbers the chart
-// shows. Reading it off tide shape alone let the note say "within 19%" while
-// the line was falling by a third. Returns null if there is not enough curve.
-function flatness(){
-  var c=CURVE||curveData();
-  var now=Date.now();
-  var n=c.fine.filter(function(p){return p.t>=now&&p.t<=now+24*3600e3;});
-  if(n.length<4)return null;
-  var fs=fishScale();
-  var v=n.map(function(p){return fs?fs.perHrAt(p.r,p.t):p.r;});
-  var hi=Math.max.apply(null,v), lo=Math.min.apply(null,v);
-  // hi of 0 means there is no curve at all (no tides loaded). That is not
-  // "perfectly flat", it is no answer, and 0% would read as a real reading.
-  return hi>0?(hi-lo)/hi:null;
+
+// Tide shape at one moment, as a fraction of the window maximum.
+function relAt(ms) {
+  var c = CURVE || curveData();
+  return c.mx ? intensityAt(ms) / c.mx : 0;
 }
+
 // The number the app actually prints at time t. Labels must be derived from
 // this, not from raw tide shape, or they contradict the figure beside them.
-function shownAtTime(ms){
-  var f=fishScale();
-  return f?f.perHrAt(relAt(ms),ms):relAt(ms);
+function shownAtTime(ms) {
+  var scale = fishScale();
+  return scale ? scale.perHrAt(relAt(ms), ms) : relAt(ms);
 }
-// One number per row: where the forecast is highest inside this window.
+
+// How much the next 24 hrs varies, measured on the numbers the chart shows.
+// Reading it off tide shape alone let the note say "within 19%" while the line
+// was falling by a third. Returns null if there is not enough curve.
+function flatness() {
+  var c = CURVE || curveData();
+  var now = Date.now();
+  var next24 = c.fine.filter(function (p) {
+    return p.t >= now && p.t <= now + 24 * 3600e3;
+  });
+  if (next24.length < 4) return null;
+
+  var scale = fishScale();
+  var values = next24.map(function (p) {
+    return scale ? scale.perHrAt(p.r, p.t) : p.r;
+  });
+  var hi = Math.max.apply(null, values);
+  var lo = Math.min.apply(null, values);
+
+  // hi of 0 means there is no curve at all (no tides loaded). That is not
+  // "perfectly flat", it is no answer, and 0% would read as a real reading.
+  return hi > 0 ? (hi - lo) / hi : null;
+}
+
+// Is any hour in the next day actually worth waiting for? Answered in fish/hr,
+// the same unit as the headline, so it can be checked against the graph.
+//
+// An earlier version reported this hour as a percentage of the day's best on
+// tide shape alone. Two things were wrong with that. A percentage of a nearly
+// flat curve can never leave the top of its range: with a 9% tide spread it
+// read 90-100% forever and sat on 100% for hours. And it ignored the run trend
+// while the graph included it, so the words and the picture disagreed.
+function waitVerdict() {
+  var c = CURVE || curveData();
+  // With no tides loaded the array is full of zeroes rather than empty, so
+  // checking length alone returned a verdict of all zeros instead of nothing.
+  var hasCurve = c.fine.length
+              && c.mx > 0
+              && c.fine.some(function (p) { return p.i > 0; });
+  if (!hasCurve) return null;
+
+  var scale = fishScale();
+  var now = Date.now();
+
+  var ahead = c.fine.filter(function (p) {
+    return p.t > now + 30 * 60000 && p.t <= now + 24 * 3600e3;
+  });
+  if (!ahead.length) return null;
+
+  var best = ahead.reduce(function (b, p) { return (!b || p.v > b.v) ? p : b; }, null);
+  var nowValue = scale
+    ? scale.perHrAt(intensityAt(now) / c.mx, now)
+    : intensityAt(now) / c.mx;
+
+  // Tide-only spread across the calendar day, for the "why not" explanation.
+  var dayStart = +startOfDay(new Date(now));
+  var hi = 0;
+  var lo = Infinity;
+  for (var t = dayStart; t < dayStart + 24 * 3600e3; t += 15 * 60000) {
+    var v = intensityAt(t);
+    if (v > hi) hi = v;
+    if (v < lo) lo = v;
+  }
+
+  return {
+    nowV: nowValue,
+    bestV: best.v,
+    bestT: best.t,
+    gain: nowValue > 0 ? best.v / nowValue - 1 : 0,
+    tideSpread: hi > 0 ? (hi - lo) / hi : 0,
+    hasScale: !!scale
+  };
+}
+
+// One number per window row: where the forecast is highest inside it.
 // If that lands in the middle it is a real peak. If it lands on an edge the
 // window merely clipped a rise or a fall, which is an artifact of where the
 // boundary falls, not a fact about fish. That artifact used to be dressed up
 // as "still building" and fired on most rows while the run was falling.
 // Windows overlap (16 hrs wide, tides 12.4 hrs apart) so a maximum can sit
 // inside two of them; claim the star only for the nearer arrival centre.
-function windowBest(w){
-  var best=null;
-  for(var t=+w.arrStart;t<=+w.arrEnd;t+=15*60000){
-    var v=shownAtTime(t);
-    if(!best||v>best.v) best={t:t,v:v};
+function windowBest(w) {
+  var best = null;
+  for (var t = +w.arrStart; t <= +w.arrEnd; t += 15 * 60000) {
+    var v = shownAtTime(t);
+    if (!best || v > best.v) best = { t: t, v: v };
   }
-  if(!best) return {t:w.peak,peak:false};
-  var edge=45*60000;
-  var interior=(best.t>+w.arrStart+edge && best.t<+w.arrEnd-edge);
-  if(interior){
-    var nearest=buildWindows().reduce(function(b,x){
-      var d=Math.abs(+x.peak-best.t);
-      return (!b||d<b.d)?{ht:+x.ht,d:d}:b;
-    },null);
-    if(nearest&&nearest.ht!==+w.ht) interior=false;
+  if (!best) return { t: w.peak, peak: false };
+
+  var EDGE = 45 * 60000;
+  var interior = best.t > +w.arrStart + EDGE && best.t < +w.arrEnd - EDGE;
+
+  if (interior) {
+    var nearest = buildWindows().reduce(function (b, x) {
+      var gap = Math.abs(+x.peak - best.t);
+      return (!b || gap < b.gap) ? { ht: +x.ht, gap: gap } : b;
+    }, null);
+    if (nearest && nearest.ht !== +w.ht) interior = false;
   }
-  return {t:new Date(best.t),peak:interior};
+
+  return { t: new Date(best.t), peak: interior };
 }
-function strengthLabel(ms){
-  var r=relAt(ms), fs=fishScale();
-  return fs?("~"+fishFmt(fs.perHrAt(r,ms))+" fish/hr"):(Math.round(r*100)+"%");
+
+function strengthLabel(ms) {
+  var scale = fishScale();
+  if (!scale) return Math.round(relAt(ms) * 100) + "%";
+  return "~" + fishFmt(scale.perHrAt(relAt(ms), ms)) + " fish/hr";
 }
-// Fish reaching the spot at time t crossed the sonar this many hours earlier.
-function sonarBackHrs(){ return lagCenter()*(1-SONAR_FRAC); }
+
+
+/* ===========================================================================
+   5. SONAR COUNTS
+   =========================================================================== */
+
+// Val Town HTTP val that reads the ADF&G results page. See valtown.js.
+// Direct fetch is not an option: ADF&G does not send an Access-Control header,
+// so the browser discards the response, and their JSON export contains no
+// current-year rows anyway (checked 2026-07-29: only 2025 back to 2022). The
+// val reads their HTML results page instead. With PROXY empty, counts are
+// entered by hand.
+var PROXY = "https://ruifernandes--748f73888bea11f1bd241607ee4eb77e.web.val.run";
+
+var ADFG_PAGE = "https://www.adfg.alaska.gov/sf/FishCounts/index.cfm"
+              + "?ADFG=main.displayResults&COUNTLOCATIONID=40&SPECIESID=420"
+              + "&YEAR=" + (new Date().getFullYear());
+
+var LAST_SONAR = null;                   // {c: cumulative, d: daily, o: Date, l: live}
+var LAST_ROWS = null;                    // [{date, count, cumulative}] from the val
+
+function adfgURL(year) {
+  return PROXY.replace(/\/$/, "") + "/?year=" + year;
+}
+
+function loadSonar() {
+  function useSavedOrAsk() {
+    var saved = loadJSON("kenai_sonar_v1", null);
+    if (saved) {
+      renderSonar(saved.cumulative, saved.daily, new Date(saved.date + "T12:00:00"), false);
+    } else {
+      showSonarForm();
+    }
+  }
+
+  if (!PROXY) { useSavedOrAsk(); return; }
+
+  fetch(adfgURL(new Date().getFullYear()))
+    .then(function (res) { return res.json(); })
+    .then(function (json) {
+      if (!json || !json.last || !(json.last.cumulative > 0)) {
+        throw new Error(json && json.error ? json.error : "no rows");
+      }
+      LAST_ROWS = json.rows || null;
+      // Cache it, so a later load with no signal still shows the real numbers
+      // instead of dropping back to whatever was typed in weeks ago.
+      saveJSON("kenai_sonar_v1", {
+        date: json.last.date,
+        cumulative: json.last.cumulative,
+        daily: json.last.count
+      });
+      renderSonar(json.last.cumulative, json.last.count,
+                  new Date(json.last.date + "T12:00:00"), true);
+    })
+    .catch(useSavedOrAsk);
+}
+
 // How fast the run is changing, per day, from the last four posted counts.
 // Clamped so one freak day cannot send the projection to the moon.
-function trendPerDay(){
-  if(!LAST_ROWS||LAST_ROWS.length<4)return 1;
-  var a=LAST_ROWS[LAST_ROWS.length-4].count, b=LAST_ROWS[LAST_ROWS.length-1].count;
-  if(!(a>0)||!(b>0))return 1;
-  return Math.min(1.35,Math.max(0.65,Math.pow(b/a,1/3)));
+function trendPerDay() {
+  if (!LAST_ROWS || LAST_ROWS.length < 4) return 1;
+
+  var first = LAST_ROWS[LAST_ROWS.length - 4].count;
+  var last = LAST_ROWS[LAST_ROWS.length - 1].count;
+  if (!(first > 0) || !(last > 0)) return 1;
+
+  var perDay = Math.pow(last / first, 1 / 3);
+  return Math.min(1.35, Math.max(0.65, perDay));
 }
-// The daily count for the day those fish crossed. Posted days come straight
-// from ADF&G; days not posted yet follow the trend. Scaling the whole 48 hr
-// forecast by one stale day meant the only thing shaping the line was the
-// tide, so the chart drew the run RISING while it was falling a third a day.
-function countOnDay(c,offset){
-  var d=new Date(c.getFullYear(),c.getMonth(),c.getDate()+offset);
-  var key=d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate());
-  for(var i=LAST_ROWS.length-1;i>=0;i--)
-    if(LAST_ROWS[i].date===key) return LAST_ROWS[i].count;
-  var last=LAST_ROWS[LAST_ROWS.length-1];
-  var days=Math.round((Date.parse(key)-Date.parse(last.date))/86400000);
-  if(!(days>0)) return null;                  // earlier than the record we have
-  return last.count*Math.pow(trendPerDay(),days);
+
+// The posted count for one calendar day, or a projection if ADF&G has not
+// posted it yet. Returns null for days earlier than the record we hold.
+function countOnDay(date, dayOffset) {
+  var key = dateKey(startOfDay(date, dayOffset));
+
+  for (var i = LAST_ROWS.length - 1; i >= 0; i--) {
+    if (LAST_ROWS[i].date === key) return LAST_ROWS[i].count;
+  }
+
+  var last = LAST_ROWS[LAST_ROWS.length - 1];
+  var daysAhead = Math.round((Date.parse(key) - Date.parse(last.date)) / 86400000);
+  if (!(daysAhead > 0)) return null;
+  return last.count * Math.pow(trendPerDay(), daysAhead);
 }
-function dailyRate(ms){
-  var base=LAST_SONAR?LAST_SONAR.d:null;
-  if(ms==null||!LAST_ROWS||!LAST_ROWS.length)return base;
-  var c=new Date(ms-sonarBackHrs()*MS_H);
+
+// The daily count driving arrivals at time ms. Scaling the whole 48 hr forecast
+// by one stale day meant the only thing shaping the line was the tide, so the
+// chart drew the run RISING while it was falling a third a day.
+function dailyRate(ms) {
+  var fallback = LAST_SONAR ? LAST_SONAR.d : null;
+  if (ms == null || !LAST_ROWS || !LAST_ROWS.length) return fallback;
+
+  var crossed = new Date(ms - sonarBackHrs() * MS_H);
+
   // Treat each daily count as centred on noon and blend between neighbours.
   // Used as a straight step it drops a third at one arbitrary hour and the
   // chart shows a cliff, which reads as a bug rather than as a falling run.
-  var h=c.getHours()+c.getMinutes()/60;
-  var off=h<12?-1:0;
-  var w=h<12?(h+12)/24:(h-12)/24;
-  var a=countOnDay(c,off), b=countOnDay(c,off+1);
-  if(a==null&&b==null)return base;
-  if(a==null)return b;
-  if(b==null)return a;
-  return a+(b-a)*w;
+  var hour = crossed.getHours() + crossed.getMinutes() / 60;
+  var offset = hour < 12 ? -1 : 0;
+  var blend = hour < 12 ? (hour + 12) / 24 : (hour - 12) / 24;
+
+  var earlier = countOnDay(crossed, offset);
+  var later = countOnDay(crossed, offset + 1);
+
+  if (earlier == null && later == null) return fallback;
+  if (earlier == null) return later;
+  if (later == null) return earlier;
+  return earlier + (later - earlier) * blend;
 }
-// Curve gives the SHAPE of arrivals within a day; the sonar count gives the
-// SCALE for that day. mean(r) represents an average hour.
-function fishScale(){
-  if(!LAST_SONAR||LAST_SONAR.d==null||!(LAST_SONAR.d>0))return null;
-  var cd=CURVE||curveData(); if(!cd.fine.length)return null;
+
+
+/* ===========================================================================
+   6. SCALING
+   ---------------------------------------------------------------------------
+   The curve gives the SHAPE of arrivals within a day. The sonar count gives the
+   SIZE. Multiply them to get fish per hour.
+   =========================================================================== */
+
+function fishScale() {
+  if (!LAST_SONAR || LAST_SONAR.d == null || !(LAST_SONAR.d > 0)) return null;
+
+  var c = CURVE || curveData();
+  if (!c.fine.length) return null;
+
   // Normalise over a fixed 24 hrs centred on now, not over the drawn window.
   // Averaging across whatever happens to be on screen meant widening the chart
   // silently changed every fish/hr number printed on it.
-  var t0=Date.now()-12*3600e3, sum=0, n=0;
-  for(var t=t0;t<=t0+24*3600e3;t+=15*60000){ sum+=intensityAt(t); n++; }
-  var meanI=n?sum/n:0;
-  if(!(meanI>0))return null;
-  return {perHrAt:function(r,ms){var d=dailyRate(ms);
-            return (d==null?0:d)/24*(r*cd.mx/meanI);},
-          daily:LAST_SONAR.d, date:LAST_SONAR.o, live:LAST_SONAR.l,
-          trend:trendPerDay(), projected:!!(LAST_ROWS&&LAST_ROWS.length>=4)};
+  var from = Date.now() - 12 * 3600e3;
+  var sum = 0;
+  var count = 0;
+  for (var t = from; t <= from + 24 * 3600e3; t += 15 * 60000) {
+    sum += intensityAt(t);
+    count++;
+  }
+  var meanIntensity = count ? sum / count : 0;
+  if (!(meanIntensity > 0)) return null;
+
+  return {
+    // r is tide shape at time ms; the result is fish per hour.
+    perHrAt: function (r, ms) {
+      var perDay = dailyRate(ms);
+      if (perDay == null) return 0;
+      return perDay / 24 * (r * c.mx / meanIntensity);
+    },
+    daily: LAST_SONAR.d,
+    date: LAST_SONAR.o,
+    live: LAST_SONAR.l,
+    trend: trendPerDay(),
+    projected: !!(LAST_ROWS && LAST_ROWS.length >= 4)
+  };
 }
-function fishFmt(n){
-  if(n>=10000)return commas(Math.round(n/100)*100);
-  if(n>=1000)return commas(Math.round(n/10)*10);
-  return commas(n);
+
+
+/* ===========================================================================
+   7. DISPLAY: TOP CARD
+   =========================================================================== */
+
+var heroCountdownTarget = null;
+
+function renderSpot() {
+  setText("spotline", "Fishing Holes \u00b7 RM " + SPOT_RM + ", "
+                    + SPOT_RM + " mi upstream from the mouth");
 }
-function renderBest(){
-  var box=document.getElementById("bestBody"); if(!box)return;
-  if(!HIGH_TIDES.length){box.innerHTML='<div class="note">Waiting on tides\u2026</div>';return;}
-  var narrow=window.innerWidth<430;
-  var cd=CURVE||curveData();
-  var nowR=cd.nowR;
-  // Aim for a bar count that stays readable rather than a fixed sample step.
-  // At 96 hrs a fixed step of 4 gave 97 bars, under 4px each on a phone.
-  var target=narrow?72:96;
-  var every=Math.max(1,Math.round(cd.fine.length/target));
-  var pts=cd.fine.filter(function(_,i){return i%every===0;});
-  var fs=fishScale();
-  var spread=flatness();
-  var flat=(spread!=null&&spread<FLAT_AT);
-  var peaks=cd.future.slice().sort(function(a,b){return b.v-a.v;}).slice(0,3)
-              .sort(function(a,b){return a.t-b.t;});
-  // The curve is normalised over 72 hrs including 24 hrs of history, so if the
-  // biggest arrival already happened no future peak reaches 1.0 and nothing gets
-  // starred. Star the strongest peak actually listed instead.
-  var bestShown=peaks.reduce(function(m,p){return Math.max(m,p.v);},0);
-  var ahead=cd.fine.filter(function(p){return p.t>=Date.now();});
-  var fallingAhead=ahead.length>1&&ahead[ahead.length-1].v<ahead[0].v;
-  var firstFuture=-1;
-  pts.forEach(function(p,i){ if(firstFuture<0&&!p.past) firstFuture=i; });
+
+function renderWindowLabel() {
+  setText("bestLabel", "Best bets \u00b7 last " + BACK_HRS + " & next " + FWD_HRS + " hrs");
+}
+
+// The section below the divider: what is reaching the spot right now, the
+// explanation, and the count driving it all.
+function renderHeroNow(showRate, note) {
+  var el = byId("heroNow");
+  if (!el) return;
+
+  var scale = fishScale();
+  var parts = [];
+
+  if (showRate) {
+    var rate = scale
+      ? "~" + fishFmt(shownAtTime(Date.now())) + " fish/hr"
+      : Math.round(relAt(Date.now()) * 100) + "% on tide timing";
+    parts.push('<div class="lbl">Right now</div>');
+    parts.push('<div class="v num">' + rate + '</div>');
+  }
+
+  if (note) parts.push('<div class="sub note2">' + note + '</div>');
+
+  if (LAST_SONAR && LAST_SONAR.d != null) {
+    var trendText = "";
+    if (scale && scale.projected && Math.abs(scale.trend - 1) > 0.03) {
+      trendText = " \u00b7 " + (scale.trend < 1 ? "falling" : "rising") + " "
+                + Math.round(Math.abs(scale.trend - 1) * 100) + "% a day";
+    }
+    parts.push('<div class="sub num">'
+      + commas(LAST_SONAR.d) + "/day at the sonar on "
+      + (LAST_SONAR.o.getMonth() + 1) + "/" + LAST_SONAR.o.getDate()
+      + trendText
+      + (LAST_SONAR.l ? "" : " \u00b7 entered by hand")
+      + '</div>');
+  } else {
+    parts.push('<div class="sub">No sonar count yet. '
+             + 'Add one in Run strength to see fish/hr.</div>');
+  }
+
+  el.innerHTML = parts.length ? '<div class="nowbox">' + parts.join("") + "</div>" : "";
+}
+
+// The sentence under the divider. Two separate facts kept separate: whether a
+// later hour beats this one, and why not when it does not.
+function buildWaitNote(verdict, sourceTide) {
+  var tideText = "";
+  if (sourceTide) {
+    tideText = " The fish arriving now rode the " + clock(sourceTide.ht)
+             + (sourceTide.htV != null ? " (" + sourceTide.htV.toFixed(1) + " ft)" : "")
+             + " high tide at the mouth.";
+  }
+  if (!verdict) return tideText.trim();
+
+  var scale = fishScale();
+  function amount(v) {
+    return verdict.hasScale ? "~" + fishFmt(v) + " fish/hr" : Math.round(v * 100) + "%";
+  }
+
+  var note;
+  if (verdict.gain > 0.10) {
+    note = "Waiting until <b>" + clock(new Date(verdict.bestT)) + "</b> gets you about <b>"
+         + amount(verdict.bestV) + "</b>, against " + amount(verdict.nowV) + " now.";
+  } else if (verdict.gain > 0.02) {
+    note = "The best hour in the next 24 is <b>" + clock(new Date(verdict.bestT))
+         + "</b> at " + amount(verdict.bestV) + ", barely above the "
+         + amount(verdict.nowV) + " you have now. Not worth waiting for.";
+  } else {
+    note = "Nothing in the next 24 hrs beats this hour.";
+    if (scale && scale.trend < 0.98) {
+      note += " The run is dropping <b>" + Math.round((1 - scale.trend) * 100)
+            + "% a day</b>, faster than tide timing can make up ("
+            + Math.round(verdict.tideSpread * 100) + "% between the best and worst hour).";
+    } else if (verdict.tideSpread < 0.12) {
+      note += " Tide timing only moves things " + Math.round(verdict.tideSpread * 100)
+            + "% across the day, so any hour will do.";
+    }
+  }
+
+  return note + tideText;
+}
+
+function renderHero() {
+  renderSonarDayNote();
+
+  var hero = byId("hero");
+  var windows = buildWindows();
+  var now = new Date();
+
+  // --- no tide data at all
+  if (!windows.length) {
+    hero.className = "card";
+    setText("heroState", "No tide data");
+    setText("heroBig", "\u2014");
+    setText("heroRange", "");
+    setText("heroMeta", "Load a high tide below to compute your windows.");
+    renderHeroNow(false, "");
+    heroCountdownTarget = null;
+    renderBest();
+    return;
+  }
+
+  var openWindow = windows.filter(function (w) {
+    return w.arrStart <= now && now <= w.arrEnd;
+  })[0];
+
+  var curve = curveData();
+  var nowR = curve.nowR;
+
+  // --- flat day: no peak worth naming, so say so before peak detection
+  var spread = flatness();
+  if (spread != null && spread < FLAT_AT) {
+    var flatScale = fishScale();
+    hero.className = "card flat";
+    setText("heroState", "Timing flat \u00b7 next 24 hrs");
+    setText("heroBig", flatScale
+      ? "~" + fishFmt(flatScale.perHrAt(nowR, Date.now())) + " fish/hr"
+      : Math.round(nowR * 100) + "%");
+    setHTML("heroRange", "");
+    setHTML("heroMeta", "Best hour beats worst by only <b>"
+      + Math.round(spread * 100) + "%</b> today, so tide timing is not worth "
+      + "planning around. Fish when you can. "
+      + (flatScale
+          ? "What matters is the run: " + commas(flatScale.daily) + "/day at the sonar."
+          : "Add a sonar count in Run strength to see fish/hr."));
+    renderHeroNow(false, "");
+    heroCountdownTarget = null;
+    renderTimeline(windows, openWindow);
+    renderBest();
+    return;
+  }
+
+  // --- the best time ahead, measured on the numbers the app prints
+  var scale = fishScale();
+  var nowShown = scale ? scale.perHrAt(nowR, +now) : nowR;
+  var future = curve.fine.filter(function (p) {
+    return p.t >= +now && p.t <= +now + FWD_HRS * 3600e3;
+  });
+  var best = future.reduce(function (b, p) { return (!b || p.v > b.v) ? p : b; }, null);
+
+  if (!best) {
+    renderHeroNow(true, "");
+    renderTimeline(windows, openWindow);
+    renderBest();
+    return;
+  }
+
+  // If nothing ahead beats right now, right now IS the best. Saying "next peak"
+  // in that situation is simply false.
+  var bestIsNow = (best.t - (+now) <= 45 * 60000) || (nowShown >= best.v);
+  var markTime = new Date(bestIsNow ? +now : best.t);
+
+  var sourceTide = windows.slice().sort(function (a, b) {
+    return Math.abs(a.peak - markTime) - Math.abs(b.peak - markTime);
+  })[0];
+
+  var note = buildWaitNote(waitVerdict(), sourceTide);
+  setHTML("heroMeta", "");
+
+  if (bestIsNow) {
+    hero.className = "card go";
+    setHTML("heroState", '<span class="pulse">\u25cf</span> Best right now');
+    setText("heroBig", scale
+      ? "~" + fishFmt(nowShown) + " fish/hr"
+      : Math.round(nowShown * 100) + "%");
+    setHTML("heroRange", openWindow
+      ? '<span class="chip fit">window runs to ' + clock(openWindow.arrEnd) + "</span>"
+      : "");
+    renderHeroNow(false, note);
+    heroCountdownTarget = null;
+  } else {
+    hero.className = "card next";
+    setText("heroState", "Best ahead \u00b7 " + dayName(markTime));
+    setText("heroBig", clock(markTime));
+    setHTML("heroRange", 'in <span id="cd" class="num"></span> '
+      + '<span class="chip pk">'
+      + (scale ? "~" + fishFmt(best.v) + " fish/hr"
+               : Math.round(best.v * 100) + "% on tide timing")
+      + "</span>");
+    renderHeroNow(true, note);
+    heroCountdownTarget = { el: "cd", time: markTime };
+  }
+
+  renderTimeline(windows, openWindow);
+  renderBest();
+}
+
+function tick() {
+  if (!heroCountdownTarget) return;
+  var el = byId(heroCountdownTarget.el);
+  if (el) el.textContent = fmtDur(heroCountdownTarget.time - new Date());
+}
+
+// Fish arriving now crossed RM 19 some hours ago. That window says which ADF&G
+// daily count they belong to.
+function renderSonarDayNote() {
+  var el = byId("sonarDayNote");
+  if (!el) return;
+
+  var now = new Date();
+  var remaining = 1 - SONAR_FRAC;
+  var earliest = new Date(+now - S.lagHi * remaining * MS_H);
+  var latest = new Date(+now - S.lagLo * remaining * MS_H);
+
+  var oneDay = sameDay(earliest, latest);
+  var label = oneDay
+    ? pastDayName(latest)
+    : pastDayName(earliest) + " through " + pastDayName(latest);
+
+  el.innerHTML = "<b>Fishing right now?</b> Those fish crossed the sonar "
+    + (oneDay ? "on " : "") + "<b>" + label + "</b>"
+    + (sameDay(latest, now) ? " \u2014 that count is not posted yet." : ".");
+}
+
+
+/* ===========================================================================
+   8. DISPLAY: CHART
+   =========================================================================== */
+
+function buildChartBars(points, scale) {
   // Zoom the axis to what is actually happening, so building / peaking / fading
   // is visible. A fixed ceiling flattened every normal day into a stripe. The
   // top and bottom values are printed either side of the strip, so a small
   // wiggle reads as a small wiggle instead of looking like terrain.
-  var vals=pts.map(function(p){return fs?fs.perHrAt(p.r,p.t):p.r;});
-  var yLo=Math.min.apply(null,vals), yHi=Math.max.apply(null,vals);
-  var span=(yHi-yLo)||1;
-  var bars=pts.map(function(p,i){
-    var d=new Date(p.t);
+  var values = points.map(function (p) { return scale ? scale.perHrAt(p.r, p.t) : p.r; });
+  var yLo = Math.min.apply(null, values);
+  var yHi = Math.max.apply(null, values);
+  var span = (yHi - yLo) || 1;
+
+  var firstFuture = -1;
+  points.forEach(function (p, i) { if (firstFuture < 0 && !p.past) firstFuture = i; });
+
+  var html = points.map(function (p, i) {
+    var frac = (values[i] - yLo) / span;
     // Lowest bar keeps 6px so the strip stays readable as a continuous shape.
-    var frac=((fs?fs.perHrAt(p.r,p.t):p.r)-yLo)/span;
-    var h=Math.round(6+frac*54);
-    var op=(0.40+frac*0.60).toFixed(2);
-    var prev=i?new Date(pts[i-1].t):null;
-    var cls=[];
-    if(p.past) cls.push("past");
-    if(i===firstFuture) cls.push("nowbar");
-    if(prev&&d.getDate()!==prev.getDate()) cls.push("db");   // midnight divider
-    return '<i class="'+cls.join(" ")+'" style="height:'+h+'px;opacity:'+op+'"></i>';
+    var height = Math.round(6 + frac * 54);
+    var opacity = (0.40 + frac * 0.60).toFixed(2);
+
+    var classes = [];
+    if (p.past) classes.push("past");
+    if (i === firstFuture) classes.push("nowbar");
+    var prev = i ? new Date(points[i - 1].t) : null;
+    if (prev && new Date(p.t).getDate() !== prev.getDate()) classes.push("db");
+
+    return '<i class="' + classes.join(" ") + '" style="height:' + height
+         + "px;opacity:" + opacity + '"></i>';
   }).join("");
-  var ticks="";
+
+  return { html: html, yLo: yLo, yHi: yHi };
+}
+
+function buildChartTicks(points, every) {
   // Roughly 12 hrs between labels, whatever the sample step turned out to be.
-  var stepT=Math.max(2,Math.round(12*60/(every*15)));
-  var prevDay=null;
-  for(var k=0;k<pts.length;k+=stepT){
-    var d=new Date(pts[k].t);
-    var hr=(d.getHours()%12||12)+(d.getHours()<12?"a":"p");
+  var step = Math.max(2, Math.round(12 * 60 / (every * 15)));
+  var ticks = "";
+  var prevDay = null;
+
+  for (var k = 0; k < points.length; k += step) {
+    var d = new Date(points[k].t);
+    var hourLabel = (d.getHours() % 12 || 12) + (d.getHours() < 12 ? "a" : "p");
     // One short token per label. "Tod 12a" was two words in a narrow flex cell,
     // so it wrapped and became unreadable. Show the day name on the first tick
     // of each new day: keying off "before 6am" meant day names never appeared
     // unless a tick happened to land there.
-    var dayKey=d.toDateString();
-    var lab=(prevDay!==null&&dayKey!==prevDay)?dayName(d).slice(0,3):hr;
-    prevDay=dayKey;
-    ticks+='<span style="flex:'+stepT+'">'+lab+'</span>';
+    var dayKey = d.toDateString();
+    var label = (prevDay !== null && dayKey !== prevDay) ? dayName(d).slice(0, 3) : hourLabel;
+    prevDay = dayKey;
+    ticks += '<span style="flex:' + step + '">' + label + "</span>";
   }
-  box.innerHTML=
-    (fs?'<div class="ceil">'+fishFmt(yHi)+' fish/hr</div>':"")+
-    '<div class="strip">'+bars+'</div>'+
-    (fs?'<div class="floor">'+fishFmt(yLo)+' fish/hr</div>':"")+
-    '<div class="ticks">'+ticks+'</div>'+
-    '<div class="striplegend">'+
-      '<span><i class="sw past"></i>last '+BACK_HRS+' hrs</span>'+
-      '<span><i class="sw fut"></i>next '+FWD_HRS+' hrs</span>'+
-      '<span><i class="sw nowline"></i>now</span>'+
-      '<span><i class="sw mid"></i>midnight</span>'+
-    '</div>'+
-    (flat?'<div class="note" style="margin-top:10px">Top hours below are within '+
-      Math.round(spread*100)+'% of each other, so none is highlighted. '+
-      'Pick whichever suits you.</div>':"")+
-    peaks.map(function(p){
-      var d=new Date(p.t);
-      var top=(!flat&&bestShown>0&&p.v>=bestShown-1e-9);
-      var hrsAway=(p.t-Date.now())/3600e3;
-      var away=hrsAway<1?"in "+Math.max(1,Math.round(hrsAway*60))+"m":"in "+Math.round(hrsAway)+"h";
-      // 12:00 AM is the START of a day. "Tmrw 12:00 AM" reads to most people as
-      // tomorrow night, when it is actually tonight; spell it out.
-      var mn=(d.getHours()===0)?'<span class="n">midnight</span>':
-             (d.getHours()===12&&d.getMinutes()===0)?'<span class="n">noon</span>':"";
-      return '<div class="peakrow'+(top?" top":"")+'">'+(top?'<span class="star">\u2605</span>':"")+
-        '<span class="t num">'+dayName(d)+" "+clock(d)+'</span>'+mn+
-        '<span class="away">'+away+'</span>'+
-        '<span class="pct">'+(fs?"~"+fishFmt(p.v)+" fish/hr":Math.round(p.v*100)+"%")+'</span>'+
-        (top?'<span class="n">biggest of the next '+FWD_HRS+' hrs</span>':"")+
-        '</div>';
-    }).join("")+
+  return ticks;
+}
+
+function buildPeakRows(peaks, scale, flat, bestShown, fallingAhead) {
+  if (!peaks.length) {
     // With a steady trend and small tides the forecast can fall (or climb) all
     // the way through the window with no local maximum anywhere in it. Listing
     // tide peaks anyway is what put a smaller number under "biggest of the next
     // 48 hrs". If there is no peak, say so and say which way it is going.
-    (peaks.length?"":'<div class="peakrow"><span class="n">No peak ahead in the next '+
-      FWD_HRS+' hrs. The forecast '+(fallingAhead?'falls steadily from here, so earlier is better.'
-      :'climbs steadily, so later is better.')+'</span></div>')+
-    (fs
-      ? '<div class="note" style="margin-top:10px"><b>Rough numbers.</b> Each hour is scaled by '+
-        'the sonar count for the day those fish crossed RM 19, then carried up to you. '+
-        (fs.projected&&Math.abs(fs.trend-1)>0.03
-          ? 'Days ADF&G has not posted yet are projected at <b>'+
-            (fs.trend<1?"-":"+")+Math.round(Math.abs(fs.trend-1)*100)+'% a day</b>, '+
-            'following the last four counts. '
-          : '')+
-        'Sport harvest below you thins it, and these fish are spread across the whole river, '+
-        'not all in casting range. Treat it as ballpark, not a headcount.</div>'
-      : '<div class="note" style="margin-top:10px"><b>Tide timing only.</b> Built from high tide times, tide heights, and your '+
-        S.lagLo+'\u2013'+S.lagHi+' hr lag. Enter a daily sonar count in Run strength and this becomes fish/hr.</div>');
+    return '<div class="peakrow"><span class="n">No peak ahead in the next '
+      + FWD_HRS + " hrs. The forecast "
+      + (fallingAhead ? "falls steadily from here, so earlier is better."
+                      : "climbs steadily, so later is better.")
+      + "</span></div>";
+  }
+
+  return peaks.map(function (p) {
+    var d = new Date(p.t);
+    var isTop = !flat && bestShown > 0 && p.v >= bestShown - 1e-9;
+
+    var hrsAway = (p.t - Date.now()) / 3600e3;
+    var away = hrsAway < 1
+      ? "in " + Math.max(1, Math.round(hrsAway * 60)) + "m"
+      : "in " + Math.round(hrsAway) + "h";
+
+    // 12:00 AM is the START of a day. "Tmrw 12:00 AM" reads to most people as
+    // tomorrow night, when it is actually tonight; spell it out.
+    var midnightNote = "";
+    if (d.getHours() === 0) midnightNote = '<span class="n">midnight</span>';
+    else if (d.getHours() === 12 && d.getMinutes() === 0) midnightNote = '<span class="n">noon</span>';
+
+    return '<div class="peakrow' + (isTop ? " top" : "") + '">'
+      + (isTop ? '<span class="star">\u2605</span>' : "")
+      + '<span class="t num">' + dayName(d) + " " + clock(d) + "</span>"
+      + midnightNote
+      + '<span class="away">' + away + "</span>"
+      + '<span class="pct">'
+      + (scale ? "~" + fishFmt(p.v) + " fish/hr" : Math.round(p.v * 100) + "%")
+      + "</span>"
+      + (isTop ? '<span class="n">biggest of the next ' + FWD_HRS + " hrs</span>" : "")
+      + "</div>";
+  }).join("");
 }
-function sameDay(a,b){return a.getFullYear()===b.getFullYear()&&a.getMonth()===b.getMonth()&&a.getDate()===b.getDate();}
-// dayName only labels today/forward; this covers yesterday/further back too.
-function pastDayName(d){
-  var n=new Date(),t=new Date(n.getFullYear(),n.getMonth(),n.getDate());
-  var dd=new Date(d.getFullYear(),d.getMonth(),d.getDate());
-  var diff=Math.round((t-dd)/86400000);
-  var mmdd=pad(d.getMonth()+1)+"/"+pad(d.getDate());   // matches ADF&G's "Date 2026" column exactly
-  if(diff===0)return"Today ("+mmdd+")"; if(diff===1)return"Yesterday ("+mmdd+")";
-  return["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][d.getDay()]+" "+mmdd;
+
+function buildChartFootnote(scale) {
+  if (!scale) {
+    return '<div class="note" style="margin-top:10px"><b>Tide timing only.</b> '
+      + "Built from high tide times, tide heights, and your "
+      + S.lagLo + "\u2013" + S.lagHi + " hr lag. "
+      + "Enter a daily sonar count in Run strength and this becomes fish/hr.</div>";
+  }
+
+  var projectionText = "";
+  if (scale.projected && Math.abs(scale.trend - 1) > 0.03) {
+    projectionText = "Days ADF&G has not posted yet are projected at <b>"
+      + (scale.trend < 1 ? "-" : "+")
+      + Math.round(Math.abs(scale.trend - 1) * 100) + "% a day</b>, "
+      + "following the last four counts. ";
+  }
+
+  return '<div class="note" style="margin-top:10px"><b>Rough numbers.</b> '
+    + "Each hour is scaled by the sonar count for the day those fish crossed "
+    + "RM 19, then carried up to you. "
+    + projectionText
+    + "Sport harvest below you thins it, and these fish are spread across the "
+    + "whole river, not all in casting range. Treat it as ballpark, not a headcount.</div>";
 }
-// Fish arriving at the spot right now crossed RM 19 (lagLo-lagHi)*(1-SONAR_FRAC)
-// hours ago. That window tells you which ADF&G daily count(s) they belong to.
-function renderSonarDayNote(){
-  var el=document.getElementById("sonarDayNote"); if(!el)return;
-  var now=new Date(), f=1-SONAR_FRAC;
-  var earliest=new Date(+now-S.lagHi*f*MS_H), latest=new Date(+now-S.lagLo*f*MS_H);
-  var sameCal=sameDay(earliest,latest);
-  var label=sameCal?pastDayName(latest):(pastDayName(earliest)+" through "+pastDayName(latest));
-  var todayInvolved=sameDay(latest,now);
-  el.innerHTML="<b>Fishing right now?</b> Those fish crossed the sonar "+
-    (sameCal?"on ":"")+"<b>"+label+"</b>"+
-    (todayInvolved?" \u2014 that count is not posted yet.":".");
+
+function renderBest() {
+  var box = byId("bestBody");
+  if (!box) return;
+
+  if (!HIGH_TIDES.length) {
+    box.innerHTML = '<div class="note">Waiting on tides\u2026</div>';
+    return;
+  }
+
+  var curve = CURVE || curveData();
+  var scale = fishScale();
+
+  // Aim for a bar count that stays readable rather than a fixed sample step.
+  // At 96 hrs a fixed step of 4 gave 97 bars, under 4px each on a phone.
+  var narrow = window.innerWidth < 430;
+  var target = narrow ? 72 : 96;
+  var every = Math.max(1, Math.round(curve.fine.length / target));
+  var points = curve.fine.filter(function (_, i) { return i % every === 0; });
+
+  var spread = flatness();
+  var flat = (spread != null && spread < FLAT_AT);
+
+  var peaks = curve.future.slice()
+    .sort(function (a, b) { return b.v - a.v; })
+    .slice(0, 3)
+    .sort(function (a, b) { return a.t - b.t; });
+  var bestShown = peaks.reduce(function (m, p) { return Math.max(m, p.v); }, 0);
+
+  var ahead = curve.fine.filter(function (p) { return p.t >= Date.now(); });
+  var fallingAhead = ahead.length > 1 && ahead[ahead.length - 1].v < ahead[0].v;
+
+  var chart = buildChartBars(points, scale);
+
+  box.innerHTML =
+      (scale ? '<div class="ceil">' + fishFmt(chart.yHi) + " fish/hr</div>" : "")
+    + '<div class="strip">' + chart.html + "</div>"
+    + (scale ? '<div class="floor">' + fishFmt(chart.yLo) + " fish/hr</div>" : "")
+    + '<div class="ticks">' + buildChartTicks(points, every) + "</div>"
+    + '<div class="striplegend">'
+      + '<span><i class="sw past"></i>last ' + BACK_HRS + " hrs</span>"
+      + '<span><i class="sw fut"></i>next ' + FWD_HRS + " hrs</span>"
+      + '<span><i class="sw nowline"></i>now</span>'
+      + '<span><i class="sw mid"></i>midnight</span>'
+    + "</div>"
+    + (flat
+        ? '<div class="note" style="margin-top:10px">Top hours below are within '
+          + Math.round(spread * 100) + "% of each other, so none is highlighted. "
+          + "Pick whichever suits you.</div>"
+        : "")
+    + buildPeakRows(peaks, scale, flat, bestShown, fallingAhead)
+    + buildChartFootnote(scale);
 }
-function dtag(d,ref){
-  if(sameDay(d,ref))return"";
-  return '<span class="dtag">'+["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][d.getDay()]+" "+d.getDate()+"</span>";
+
+
+/* ===========================================================================
+   9. DISPLAY: WINDOW LIST
+   =========================================================================== */
+
+// A small day tag like "Fri 24", shown only when a time falls outside the day
+// the row is headed with.
+function dtag(date, refDate) {
+  if (sameDay(date, refDate)) return "";
+  return '<span class="dtag">' + WEEKDAYS[date.getDay()] + " " + date.getDate() + "</span>";
 }
-function rangeDays(a,b,ref){
+
+function rangeDays(a, b, refDate) {
   // Both ends on the same day: one tag, after the range, so it never splits it.
-  if(sameDay(a,b))return clock(a)+"\u2013"+clock(b)+dtag(a,ref);
-  return clock(a)+dtag(a,ref)+"\u2013"+clock(b)+dtag(b,ref);
-}
-function renderTimeline(wins,open){
-  var el=document.getElementById("timeline"); el.innerHTML="";
-  wins.slice(0,5).forEach(function(w){
-    var div=document.createElement("div"); div.className="win";
-    var isOpen=open&&w===open;
-    // One time per row. If a genuine curve maximum falls inside this window that
-    // is the number worth acting on; otherwise fall back to the wave centre and
-    // say so. Showing both was redundant, and the ~30 min gap between them read
-    // as a contradiction.
-    var hit=windowBest(w);
-    var mark=hit.t;
-    var lbl=hit.peak?'\u2605 peak ':'best ';
-    div.innerHTML=
-      '<div class="day">'+dayName(w.arrStart)+'<span class="d2 num">'+w.arrStart.getDate()+'</span></div>'+
-      '<div>'+
-        '<div class="leg secondary"><span class="dot tide"></span><span class="t num">'+clock(w.ht)+dtag(w.ht,w.arrStart)+'</span><span class="n">high tide, mouth'+(w.htV!=null?" \u00b7 "+w.htV.toFixed(1)+" ft":"")+'</span>'+(w.htBig?'<span class="chip big">big tide</span>':"")+'</div>'+
-        '<div class="leg secondary"><span class="dot watch"></span><span class="t num">'+rangeDays(w.sonarStart,w.sonarEnd,w.arrStart)+'</span><span class="n">crosses RM 19 sonar</span></div>'+
-        '<div class="leg arr'+(hit.peak?" ispeak":"")+'"><span class="dot go"></span><span class="t num">'+lbl+clock(mark)+dtag(mark,w.arrStart)+'</span>'+
-        '<span class="str'+(relAt(+mark)>=0.7?" hi":"")+'">'+strengthLabel(+mark)+'</span>'+
-        '<span class="n">window '+rangeDays(w.arrStart,w.arrEnd,w.arrStart)+'</span>'+
-        (isOpen?'<span class="chip fit" style="background:rgba(224,72,58,.15);border-color:rgba(224,72,58,.4);color:var(--go)">now</span>':'')+'</div>'+
-      '</div>';
-    el.appendChild(div);
-  });
-}
-function tick(){
-  if(heroCountdownTarget){var e=document.getElementById(heroCountdownTarget.el);if(e)e.textContent=fmtDur(heroCountdownTarget.time-new Date());}
+  if (sameDay(a, b)) return clock(a) + "\u2013" + clock(b) + dtag(a, refDate);
+  return clock(a) + dtag(a, refDate) + "\u2013" + clock(b) + dtag(b, refDate);
 }
 
-function tideURL(){
-  var now=new Date();
-  // Arrivals at the left edge of the chart were driven by tides BACK_HRS +
-  // lagHi + 3 sigma before now. Fetch that far or the oldest bars taper to
-  // nothing and read as a dead spell that never happened. The old fixed
-  // formula happened to cover BACK_HRS=24 and was 18 hrs short at 48.
-  var back=Math.ceil((BACK_HRS+S.lagHi+3*lagSigma())/24)+1;
-  var b=new Date(+now-back*24*MS_H), e=new Date(+now+3*24*MS_H);
-  return "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=predictions&application=kenai-run-timer"+
-    "&datum=MLLW&station="+encodeURIComponent(S.station)+"&time_zone=lst_ldt&units=english&interval=hilo&format=json"+
-    "&begin_date="+ymd(b)+"&end_date="+ymd(e);
-}
-function loadTides(){
-  document.getElementById("tideFallback").style.display="none";
-  fetch(tideURL()).then(function(r){return r.json();}).then(function(j){
-    if(!j.predictions||!j.predictions.length) throw new Error(j.error?j.error.message:"No predictions");
-    HIGH_TIDES=j.predictions.filter(function(p){return p.type==="H";}).map(function(p){return {t:parseNoaa(p.t),v:parseFloat(p.v)};});
-    renderHero();
-  }).catch(function(err){
-    document.getElementById("tideFallback").style.display="block";
-    document.getElementById("tideErr").textContent="Couldn't reach NOAA tides ("+err.message+"). Enter a high tide by hand to compute windows offline.";
-    if(!HIGH_TIDES.length) renderHero();
+function renderTimeline(windows, openWindow) {
+  var el = byId("timeline");
+  el.innerHTML = "";
+
+  windows.slice(0, 5).forEach(function (w) {
+    var row = document.createElement("div");
+    row.className = "win";
+
+    var best = windowBest(w);
+    var label = best.peak ? "\u2605 peak " : "best ";
+    var isOpen = openWindow && w === openWindow;
+
+    var tideLine = '<div class="leg secondary">'
+      + '<span class="dot tide"></span>'
+      + '<span class="t num">' + clock(w.ht) + dtag(w.ht, w.arrStart) + "</span>"
+      + '<span class="n">high tide, mouth'
+        + (w.htV != null ? " \u00b7 " + w.htV.toFixed(1) + " ft" : "") + "</span>"
+      + (w.htBig ? '<span class="chip big">big tide</span>' : "")
+      + "</div>";
+
+    var sonarLine = '<div class="leg secondary">'
+      + '<span class="dot watch"></span>'
+      + '<span class="t num">' + rangeDays(w.sonarStart, w.sonarEnd, w.arrStart) + "</span>"
+      + '<span class="n">crosses RM 19 sonar</span>'
+      + "</div>";
+
+    var arrivalLine = '<div class="leg arr' + (best.peak ? " ispeak" : "") + '">'
+      + '<span class="dot go"></span>'
+      + '<span class="t num">' + label + clock(best.t) + dtag(best.t, w.arrStart) + "</span>"
+      + '<span class="str' + (relAt(+best.t) >= 0.7 ? " hi" : "") + '">'
+        + strengthLabel(+best.t) + "</span>"
+      + '<span class="n">window ' + rangeDays(w.arrStart, w.arrEnd, w.arrStart) + "</span>"
+      + (isOpen
+          ? '<span class="chip fit" style="background:rgba(224,72,58,.15);'
+            + 'border-color:rgba(224,72,58,.4);color:var(--go)">now</span>'
+          : "")
+      + "</div>";
+
+    row.innerHTML =
+        '<div class="day">' + dayName(w.arrStart)
+        + '<span class="d2 num">' + w.arrStart.getDate() + "</span></div>"
+      + "<div>" + tideLine + sonarLine + arrivalLine + "</div>";
+
+    el.appendChild(row);
   });
 }
 
-// Val Town HTTP val that reads the ADF&G results page. See worker.js / valtown.js.
-var PROXY="https://ruifernandes--748f73888bea11f1bd241607ee4eb77e.web.val.run";
 
-// Direct fetch is not an option. ADF&G does not send an Access-Control header,
-// so the browser discards the response, and their JSON export contains no
-// current-year rows anyway (checked 2026-07-29: only 2025 back to 2022). The
-// worker reads their HTML results page instead. Without PROXY set, counts are
-// entered by hand.
-function adfgURL(y){ return PROXY.replace(/\/$/,"")+"/?year="+y; }
-var ADFG_PAGE="https://www.adfg.alaska.gov/sf/FishCounts/index.cfm?ADFG=main.displayResults&COUNTLOCATIONID=40&SPECIESID=420&YEAR="+(new Date().getFullYear());
+/* ===========================================================================
+   10. DISPLAY: RUN STRENGTH
+   =========================================================================== */
 
-function histCumOn(idx){var out={};HIST_YEARS.forEach(function(y){var a=HIST[y],s=0;for(var i=0;i<=idx&&i<a.length;i++)s+=a[i];out[y]=s;});return out;}
-function paceVerdict(cum2026,idx){
-  var h=histCumOn(idx);
-  var vals=HIST_YEARS.map(function(y){return h[y];});
-  var avg=vals.reduce(function(a,b){return a+b;},0)/vals.length;
-  var pct=avg>0?Math.round((cum2026/avg-1)*100):0;
-  var word;
-  if(Math.abs(pct)<8) word="right on the 2022\u20132025 pace";
-  else word=(cum2026>=avg?"ahead of":"behind")+" the 2022\u20132025 average by "+Math.abs(pct)+"%";
-  var d=new Date();
-  var peakNote=(d.getMonth()===6&&d.getDate()<23)
+// Daily counts at the sonar, 2022-2025, starting July 1 each year. Used to say
+// whether this year is ahead of or behind the recent average.
+var HIST = {
+2025:[7312,7152,8233,12744,14263,15322,23075,29398,43876,45638,24756,30484,24964,23100,51443,108708,121741,118413,163792,212676,247783,177441,191691,159649,129762,170918,249944,175825,104694,129028,149772,195096,138734,115164,108821,108352,64587,75746,79234,49203,41336,52654,49936,35230,37225,29034,50151,32597,28567,20827],
+2024:[6366,5484,9630,13590,18120,32928,35551,56130,48342,34416,25675,21378,26940,18882,21360,30725,191328,154944,123186,69468,32229,24936,28009,92949,157434,102624,74358,67674,70914,53434,46566,48884,37498,33726,24139,22052,17847,27839,6858,11937],
+2023:[3960,3902,2598,3132,3887,3588,3084,4247,6791,8064,7950,4686,2838,5250,20616,54971,69111,46860,26100,29607,32110,17576,32124,51468,120363,195029,146970,132852,137844,74148,43109,33143,40623,44961,53525,51753,44304,44450,44620,50948,37540,37956,33768,24992,30018,40847,31276],
+2022:[5034,4212,5796,7314,7386,10341,12973,13884,13992,21424,20597,8094,9636,5556,5225,18780,45558,39697,74328,189420,155774,99324,79950,101376,54139,44166,56110,32859,24474,24594,16902,31619,36152,21493,26351,29960,19915,23752,21717,25924,21212,26198,26817,17310,6190,12872,11353]
+};
+var HIST_YEARS = [2025, 2024, 2023, 2022];
+
+function histCumOn(dayIndex) {
+  var totals = {};
+  HIST_YEARS.forEach(function (year) {
+    var days = HIST[year];
+    var sum = 0;
+    for (var i = 0; i <= dayIndex && i < days.length; i++) sum += days[i];
+    totals[year] = sum;
+  });
+  return totals;
+}
+
+function paceVerdict(cumulative, dayIndex) {
+  var byYear = histCumOn(dayIndex);
+  var values = HIST_YEARS.map(function (y) { return byYear[y]; });
+  var average = values.reduce(function (a, b) { return a + b; }, 0) / values.length;
+  var pct = average > 0 ? Math.round((cumulative / average - 1) * 100) : 0;
+
+  var comparison;
+  if (Math.abs(pct) < 8) {
+    comparison = "right on the 2022\u20132025 pace";
+  } else {
+    comparison = (cumulative >= average ? "ahead of" : "behind")
+               + " the 2022\u20132025 average by " + Math.abs(pct) + "%";
+  }
+
+  var today = new Date();
+  var peakNote = (today.getMonth() === 6 && today.getDate() < 23)
     ? " The big push usually starts around Jul 23\u201328, so a low number now is normal."
     : " Peak is typically Jul 23\u201328 and lasts 7\u201310 days.";
-  return {avg:avg,h:h,text:"You're "+word+"."+peakNote};
+
+  return { avg: average, h: byYear, text: "You're " + comparison + "." + peakNote };
 }
-var LAST_SONAR=null;
-var LAST_ROWS=null;
-var DAILY_DAYS=10;      // days of history in the daily count chart
+
 // One bar per day at the sonar. This is where the range actually is: the run
-// turned on around 7/24 and has been falling since. Zero-based, because a daily
+// turns on and falls away over a couple of weeks. Zero-based, because a daily
 // count genuinely starts at zero and the height should mean fish.
-function dailyStrip(rows){
-  if(!rows||rows.length<3)return"";
-  var use=rows.slice(-DAILY_DAYS);
-  var mx=use.reduce(function(m,r){return Math.max(m,r.count);},0)||1;
-  var bars=use.map(function(r,i){
-    return '<i class="'+(i===use.length-1?"last":"")+
-      '" style="height:'+Math.max(2,Math.round(r.count/mx*72))+'px"></i>';
+function dailyStrip(rows) {
+  if (!rows || rows.length < 3) return "";
+
+  var use = rows.slice(-DAILY_DAYS);
+  var maxCount = use.reduce(function (m, r) { return Math.max(m, r.count); }, 0) || 1;
+
+  var bars = use.map(function (r, i) {
+    var isLast = i === use.length - 1;
+    var height = Math.max(2, Math.round(r.count / maxCount * 72));
+    return '<i class="' + (isLast ? "last" : "") + '" style="height:' + height + 'px"></i>';
   }).join("");
-  function md(d){var p=d.split("-");return (+p[1])+"/"+(+p[2]);}
-  return '<hr class="soft"><p class="label">Daily count, last '+use.length+' days</p>'+
-    '<div class="ceil">'+commas(mx)+' on '+
-      md(use.filter(function(r){return r.count===mx;})[0].date)+'</div>'+
-    '<div class="dstrip">'+bars+'</div>'+
-    '<div class="ticks" style="justify-content:space-between">'+
-      '<span>'+md(use[0].date)+'</span><span>'+md(use[use.length-1].date)+'</span></div>';
+
+  function md(dateStr) {
+    var parts = dateStr.split("-");
+    return (+parts[1]) + "/" + (+parts[2]);
+  }
+  var peakDay = use.filter(function (r) { return r.count === maxCount; })[0];
+
+  return '<hr class="soft"><p class="label">Daily count, last ' + use.length + " days</p>"
+    + '<div class="ceil">' + commas(maxCount) + " on " + md(peakDay.date) + "</div>"
+    + '<div class="dstrip">' + bars + "</div>"
+    + '<div class="ticks" style="justify-content:space-between">'
+      + "<span>" + md(use[0].date) + "</span>"
+      + "<span>" + md(use[use.length - 1].date) + "</span>"
+    + "</div>";
 }
-function refreshSonar(){ if(LAST_SONAR)renderSonar(LAST_SONAR.c,LAST_SONAR.d,LAST_SONAR.o,LAST_SONAR.l); }
-function renderSonar(cum2026,daily2026,dateObj,live){
-  LAST_SONAR={c:cum2026,d:daily2026,o:dateObj,l:live};
-  setTimeout(function(){renderBest();renderHero();},0);
-  var idx=jul1Index(dateObj);
-  var v=paceVerdict(cum2026,idx);
-  var maxv=Math.max(cum2026,Math.max.apply(null,HIST_YEARS.map(function(y){return v.h[y];})))||1;
-  var rows='<div class="yearrow me"><span class="yr num">\u2019'+String(dateObj.getFullYear()).slice(2)+'</span><span class="bar"><span style="width:'+(cum2026/maxv*100)+'%"></span></span><span class="v num">'+commas(cum2026)+'</span></div>';
-  HIST_YEARS.forEach(function(y){rows+='<div class="yearrow"><span class="yr num">\u2019'+String(y).slice(2)+'</span><span class="bar"><span style="width:'+(v.h[y]/maxv*100)+'%"></span></span><span class="v num">'+commas(v.h[y])+'</span></div>';});
-  var dstr=(dateObj.getMonth()+1)+"/"+dateObj.getDate();
-  document.getElementById("sonarBody").innerHTML=
-    '<div class="bignum num">'+commas(cum2026)+'</div>'+
-    '<div class="note">cumulative through '+dstr+(daily2026!=null?' \u00b7 '+commas(daily2026)+' that day':'')+(live?' \u00b7 <span style="color:var(--tide)">live from ADF&G</span>':'')+'</div>'+
-    '<div class="verdict">'+v.text+'</div>'+
-    dailyStrip(LAST_ROWS)+
-    '<hr class="soft"><p class="label">Cumulative to '+dstr+', by year</p>'+rows+
-    '<hr class="soft">'+
-    '<a class="btnlink" href="'+ADFG_PAGE+'" target="_blank" rel="noopener">Open ADF&G count page</a> '+
-    '<button class="ghost" id="editSonar">Edit by hand</button>';
-  var es=document.getElementById("editSonar"); if(es) es.onclick=showSonarForm;
+
+function refreshSonar() {
+  if (LAST_SONAR) renderSonar(LAST_SONAR.c, LAST_SONAR.d, LAST_SONAR.o, LAST_SONAR.l);
 }
-function showSonarForm(){
-  var saved=loadJSON("kenai_sonar_v1",null);
+
+function renderSonar(cumulative, daily, dateObj, live) {
+  LAST_SONAR = { c: cumulative, d: daily, o: dateObj, l: live };
+  setTimeout(function () { renderBest(); renderHero(); }, 0);
+
+  var verdict = paceVerdict(cumulative, jul1Index(dateObj));
+  var maxValue = Math.max(cumulative,
+    Math.max.apply(null, HIST_YEARS.map(function (y) { return verdict.h[y]; }))) || 1;
+
+  function yearRow(year, value, isThisYear) {
+    return '<div class="yearrow' + (isThisYear ? " me" : "") + '">'
+      + '<span class="yr num">\u2019' + String(year).slice(2) + "</span>"
+      + '<span class="bar"><span style="width:' + (value / maxValue * 100) + '%"></span></span>'
+      + '<span class="v num">' + commas(value) + "</span>"
+      + "</div>";
+  }
+
+  var rows = yearRow(dateObj.getFullYear(), cumulative, true)
+    + HIST_YEARS.map(function (y) { return yearRow(y, verdict.h[y], false); }).join("");
+
+  var dstr = (dateObj.getMonth() + 1) + "/" + dateObj.getDate();
+
+  setHTML("sonarBody",
+      '<div class="bignum num">' + commas(cumulative) + "</div>"
+    + '<div class="note">cumulative through ' + dstr
+      + (daily != null ? " \u00b7 " + commas(daily) + " that day" : "")
+      + (live ? ' \u00b7 <span style="color:var(--tide)">live from ADF&G</span>' : "")
+      + "</div>"
+    + '<div class="verdict">' + verdict.text + "</div>"
+    + dailyStrip(LAST_ROWS)
+    + '<hr class="soft"><p class="label">Cumulative to ' + dstr + ", by year</p>" + rows
+    + '<hr class="soft">'
+    + '<a class="btnlink" href="' + ADFG_PAGE + '" target="_blank" rel="noopener">'
+      + "Open ADF&G count page</a> "
+    + '<button class="ghost" id="editSonar">Edit by hand</button>');
+
+  var editBtn = byId("editSonar");
+  if (editBtn) editBtn.onclick = showSonarForm;
+}
+
+function showSonarForm() {
+  var saved = loadJSON("kenai_sonar_v1", null);
+
   // ADF&G posts through the previous day, so default to yesterday, not today.
-  var y=new Date(); y.setDate(y.getDate()-1);
-  var ystr=y.getFullYear()+"-"+pad(y.getMonth()+1)+"-"+pad(y.getDate());
-  var dval=(saved&&saved.date)?saved.date:ystr;
-  var stale=saved&&saved.date&&saved.date<ystr;
-  document.getElementById("sonarBody").innerHTML=
-    '<p class="note">Open the ADF&G page, find its <b>last row</b>, and copy that row\u2019s date and numbers here. '+
-    'Their counts usually run a day behind, so the latest row is normally yesterday.</p>'+
-    (stale?'<p class="err">Your saved count is from '+saved.date+', older than the last day ADF&G should have. Worth refreshing.</p>':"")+
-    '<div class="field"><label>Date of that last ADF&G row</label>'+
-      '<input type="date" id="snDate" value="'+dval+'" max="'+ystr+'"></div>'+
-    '<div class="row">'+
-      '<div class="field"><label>Cumulative (this year)</label><input type="number" id="snCum" inputmode="numeric" value="'+(saved?saved.cumulative:"")+'"></div>'+
-      '<div class="field"><label>That day\u2019s count</label><input type="number" id="snDay" inputmode="numeric" value="'+(saved&&saved.daily!=null?saved.daily:"")+'"></div>'+
-    '</div>'+
-    '<p class="note" style="margin:-2px 0 10px">That day\u2019s count is what turns the graph above into fish/hr.</p>'+
-    '<div class="row"><button class="primary" id="snSave">Save &amp; compare</button>'+
-    '<a class="btnlink" href="'+ADFG_PAGE+'" target="_blank" rel="noopener" style="text-align:center">Open ADF&G</a></div>';
-  document.getElementById("snSave").onclick=function(){
-    var cum=parseFloat(document.getElementById("snCum").value);
-    var day=document.getElementById("snDay").value;
-    var dstr=document.getElementById("snDate").value;
-    if(isNaN(cum)||!dstr){return;}
-    var rec={date:dstr,cumulative:cum,daily:day===""?null:parseFloat(day)};
-    saveJSON("kenai_sonar_v1",rec);
-    renderSonar(cum,rec.daily,new Date(dstr+"T12:00:00"),false);
+  var yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  var yStr = dateKey(yesterday);
+
+  var dateValue = (saved && saved.date) ? saved.date : yStr;
+  var isStale = saved && saved.date && saved.date < yStr;
+
+  setHTML("sonarBody",
+      '<p class="note">Open the ADF&G page, find its <b>last row</b>, and copy that '
+      + "row\u2019s date and numbers here. Their counts usually run a day behind, so "
+      + "the latest row is normally yesterday.</p>"
+    + (isStale
+        ? '<p class="err">Your saved count is from ' + saved.date
+          + ", older than the last day ADF&G should have. Worth refreshing.</p>"
+        : "")
+    + '<div class="field"><label>Date of that last ADF&G row</label>'
+      + '<input type="date" id="snDate" value="' + dateValue + '" max="' + yStr + '"></div>'
+    + '<div class="row">'
+      + '<div class="field"><label>Cumulative (this year)</label>'
+        + '<input type="number" id="snCum" inputmode="numeric" value="'
+        + (saved ? saved.cumulative : "") + '"></div>'
+      + '<div class="field"><label>That day\u2019s count</label>'
+        + '<input type="number" id="snDay" inputmode="numeric" value="'
+        + (saved && saved.daily != null ? saved.daily : "") + '"></div>'
+    + "</div>"
+    + '<p class="note" style="margin:-2px 0 10px">That day\u2019s count is what turns '
+      + "the graph above into fish/hr.</p>"
+    + '<div class="row"><button class="primary" id="snSave">Save &amp; compare</button>'
+    + '<a class="btnlink" href="' + ADFG_PAGE + '" target="_blank" rel="noopener" '
+      + 'style="text-align:center">Open ADF&G</a></div>');
+
+  byId("snSave").onclick = function () {
+    var cumulative = parseFloat(byId("snCum").value);
+    var daily = byId("snDay").value;
+    var dateStr = byId("snDate").value;
+    if (isNaN(cumulative) || !dateStr) return;
+
+    var record = {
+      date: dateStr,
+      cumulative: cumulative,
+      daily: daily === "" ? null : parseFloat(daily)
+    };
+    saveJSON("kenai_sonar_v1", record);
+    renderSonar(cumulative, record.daily, new Date(dateStr + "T12:00:00"), false);
   };
 }
-function loadSonar(){
-  function manual(){
-    var saved=loadJSON("kenai_sonar_v1",null);
-    if(saved) renderSonar(saved.cumulative,saved.daily,new Date(saved.date+"T12:00:00"),false);
-    else showSonarForm();
-  }
-  if(!PROXY){ manual(); return; }
-  fetch(adfgURL(new Date().getFullYear())).then(function(r){return r.json();}).then(function(j){
-    if(!j||!j.last||!(j.last.cumulative>0)) throw new Error(j&&j.error?j.error:"no rows");
-    LAST_ROWS=j.rows||null;
-    // Cache it, so a later load with no signal still shows the real numbers
-    // instead of dropping back to whatever was typed in weeks ago.
-    saveJSON("kenai_sonar_v1",{date:j.last.date,cumulative:j.last.cumulative,daily:j.last.count});
-    renderSonar(j.last.cumulative,j.last.count,new Date(j.last.date+"T12:00:00"),true);
-  }).catch(manual);
-}
 
-function renderWhy(){
-  document.getElementById("whyBody").innerHTML=
-    "<p><b>1. The ocean push.</b> Sockeye enter the Kenai in waves on the high tide down at Cook Inlet.</p>"+
-    "<p><b>2. The counter.</b> ~"+Math.round(S.lagLo*SONAR_FRAC)+"\u2013"+Math.round(S.lagHi*SONAR_FRAC)+" hrs later they pass the RM 19 sonar. ADF&G reports one combined count there, so treat it as the size of the push, not which side of the river it is on.</p>"+
-    "<p><b>3. Your spot.</b> Another ~"+Math.round(S.lagLo*(1-SONAR_FRAC))+"\u2013"+Math.round(S.lagHi*(1-SONAR_FRAC))+" hrs to cover the last "+(SPOT_RM-SONAR_RM)+" miles up to you.</p>"+
-    "<p><b>Rule of thumb:</b> ~"+S.lagLo+"\u2013"+S.lagHi+" hrs from the mouth\u2019s high tide to your hook, i.e. about 1\u20131.5 mph over ground. High/fast water runs them slower and tighter to shore.</p>"+
-    "<p class=\"note\">Windows are estimates. Run timing shifts year to year with tides, temps, and weather.</p>";
-}
 
-function fillSettings(){
-  setVal("setStation",S.station);
-  setVal("setLagLo",S.lagLo); setVal("setLagHi",S.lagHi);
-}
-function setVal(id,v){var e=document.getElementById(id);if(e)e.value=v;}
-document.getElementById("saveSettings").onclick=function(){
-  S.station=document.getElementById("setStation").value;
-  S.lagLo=parseFloat(document.getElementById("setLagLo").value)||DEFAULTS.lagLo;
-  S.lagHi=parseFloat(document.getElementById("setLagHi").value)||DEFAULTS.lagHi;
-  saveJSON("kenai_settings_v1",S);
-  renderSpot(); renderWhy(); renderChips(); loadTides();
-  document.getElementById("settings").open=false;
-};
+/* ===========================================================================
+   11. DISPLAY: RIVER FLOW
+   ---------------------------------------------------------------------------
+   High water slows fish down. The USGS gauge picks a speed band, compared
+   against that same calendar day across 61 years of record.
+   =========================================================================== */
 
-// ---- River conditions -> recommended pace ----
 // Presets are speed bands over ground; the hours fall out of SPOT_RM so they
 // stay correct if the river mile is ever corrected.
-function mkPreset(key,label,vLo,vHi){
-  return {key:key,label:label,vLo:vLo,vHi:vHi,
-          lo:Math.round(SPOT_RM/vHi), hi:Math.round(SPOT_RM/vLo),
-          hint:vLo+"\u2013"+vHi+" mph"};
+function mkPreset(key, label, mphLo, mphHi) {
+  return {
+    key: key,
+    label: label,
+    vLo: mphLo,
+    vHi: mphHi,
+    lo: Math.round(SPOT_RM / mphHi),
+    hi: Math.round(SPOT_RM / mphLo),
+    hint: mphLo + "\u2013" + mphHi + " mph"
+  };
 }
-var PRESETS=[
-  mkPreset("low",  "Low water", 1.1,  1.7),
-  mkPreset("norm", "Normal",    1.0,  1.5),
-  mkPreset("high", "High",      0.9,  1.3),
-  mkPreset("vhigh","Very high", 0.85, 1.2)
-];
-var USGS_SITE="15266300";
-var USGS_PAGE="https://waterdata.usgs.gov/monitoring-location/USGS-"+USGS_SITE+"/";
-var RECOMMENDED=null;
 
-function parseRdb(txt){
-  var lines=txt.replace(/\r/g,"").split("\n").filter(function(l){return l&&l.charAt(0)!=="#";});
-  if(lines.length<3)return null;
-  var head=lines[0].split("\t"),rows=[];
-  for(var i=2;i<lines.length;i++){
-    var c=lines[i].split("\t"); if(c.length<head.length)continue;
-    var o={}; for(var j=0;j<head.length;j++)o[head[j]]=c[j];
-    rows.push(o);
+var PRESETS = [
+  mkPreset("low",   "Low water", 1.1,  1.7),
+  mkPreset("norm",  "Normal",    1.0,  1.5),
+  mkPreset("high",  "High",      0.9,  1.3),
+  mkPreset("vhigh", "Very high", 0.85, 1.2)
+];
+
+var USGS_SITE = "15266300";
+var USGS_PAGE = "https://waterdata.usgs.gov/monitoring-location/USGS-" + USGS_SITE + "/";
+var RECOMMENDED = null;
+
+// USGS returns tab-separated text with comment lines and a units row.
+function parseRdb(text) {
+  var lines = text.replace(/\r/g, "").split("\n")
+    .filter(function (l) { return l && l.charAt(0) !== "#"; });
+  if (lines.length < 3) return null;
+
+  var headers = lines[0].split("\t");
+  var rows = [];
+  for (var i = 2; i < lines.length; i++) {          // line 1 is units, skip it
+    var cells = lines[i].split("\t");
+    if (cells.length < headers.length) continue;
+    var row = {};
+    for (var j = 0; j < headers.length; j++) row[headers[j]] = cells[j];
+    rows.push(row);
   }
   return rows;
 }
 
-function classify(cfs,st){
-  if(cfs<st.p25)return PRESETS[0];
-  if(cfs<st.p75)return PRESETS[1];
-  if(cfs<st.p90)return PRESETS[2];
+function classify(cfs, stats) {
+  if (cfs < stats.p25) return PRESETS[0];
+  if (cfs < stats.p75) return PRESETS[1];
+  if (cfs < stats.p90) return PRESETS[2];
   return PRESETS[3];
 }
 
-function loadRiver(){
-  var iv="https://waterservices.usgs.gov/nwis/iv/?format=json&sites="+USGS_SITE+
-         "&parameterCd=00060&period=P1D&siteStatus=all";
-  var stat="https://waterservices.usgs.gov/nwis/stat/?format=rdb&sites="+USGS_SITE+
-           "&statReportType=daily&statTypeCd=all&parameterCd=00060";
+function loadRiver() {
+  var currentURL = "https://waterservices.usgs.gov/nwis/iv/?format=json&sites=" + USGS_SITE
+                 + "&parameterCd=00060&period=P1D&siteStatus=all";
+  var statsURL = "https://waterservices.usgs.gov/nwis/stat/?format=rdb&sites=" + USGS_SITE
+               + "&statReportType=daily&statTypeCd=all&parameterCd=00060";
+
   Promise.all([
-    fetch(iv).then(function(r){return r.json();}),
-    fetch(stat).then(function(r){return r.text();})
-  ]).then(function(res){
-    var vals=res[0].value.timeSeries[0].values[0].value;
-    var cfs=null;
-    for(var i=vals.length-1;i>=0;i--){
-      var v=parseFloat(vals[i].value);
-      if(!isNaN(v)&&v>-999){cfs=v;break;}
+    fetch(currentURL).then(function (r) { return r.json(); }),
+    fetch(statsURL).then(function (r) { return r.text(); })
+  ]).then(function (results) {
+    var readings = results[0].value.timeSeries[0].values[0].value;
+    var cfs = null;
+    for (var i = readings.length - 1; i >= 0; i--) {
+      var v = parseFloat(readings[i].value);
+      if (!isNaN(v) && v > -999) { cfs = v; break; }   // -999999 means no reading
     }
-    if(cfs===null)throw new Error("no current reading");
-    var rows=parseRdb(res[1]); if(!rows)throw new Error("no stats");
-    var d=new Date(),m=d.getMonth()+1,dy=d.getDate(),row=null;
-    for(var k=0;k<rows.length;k++){
-      if(parseInt(rows[k].month_nu,10)===m&&parseInt(rows[k].day_nu,10)===dy){row=rows[k];break;}
+    if (cfs === null) throw new Error("no current reading");
+
+    var rows = parseRdb(results[1]);
+    if (!rows) throw new Error("no stats");
+
+    var today = new Date();
+    var month = today.getMonth() + 1;
+    var day = today.getDate();
+    var todayRow = null;
+    for (var k = 0; k < rows.length; k++) {
+      if (parseInt(rows[k].month_nu, 10) === month && parseInt(rows[k].day_nu, 10) === day) {
+        todayRow = rows[k];
+        break;
+      }
     }
-    if(!row)throw new Error("no stats for today");
-    var st={p25:+row.p25_va,p50:+row.p50_va,p75:+row.p75_va,p90:+row.p90_va,yrs:row.count_nu};
-    RECOMMENDED=classify(cfs,st);
-    var pct=Math.round((cfs/st.p50-1)*100);
-    var vs=pct===0?"right at the median":(Math.abs(pct)+"% "+(pct>0?"above":"below")+" the median");
-    document.getElementById("riverBody").innerHTML=
-      '<div class="gauge"><span class="big">'+commas(cfs)+' <span style="font-size:14px;opacity:.6">cfs</span></span>'+
-      '<span class="vs">'+vs+' for '+d.toLocaleDateString([],{month:"short",day:"numeric"})+
-      ' ('+st.yrs+' yrs of record)</span></div>'+
-      '<div class="note">Typical range today is '+commas(st.p25)+'\u2013'+commas(st.p75)+
-      ' cfs. Recommended pace: <b style="color:var(--tide)">'+RECOMMENDED.label+'</b>, '+
-      RECOMMENDED.lo+'\u2013'+RECOMMENDED.hi+' hrs. <a href="'+USGS_PAGE+'" target="_blank" rel="noopener">Live gauge \u2197</a></div>';
+    if (!todayRow) throw new Error("no stats for today");
+
+    var stats = {
+      p25: +todayRow.p25_va, p50: +todayRow.p50_va,
+      p75: +todayRow.p75_va, p90: +todayRow.p90_va,
+      yrs: todayRow.count_nu
+    };
+    RECOMMENDED = classify(cfs, stats);
+
+    var pct = Math.round((cfs / stats.p50 - 1) * 100);
+    var vs = pct === 0
+      ? "right at the median"
+      : Math.abs(pct) + "% " + (pct > 0 ? "above" : "below") + " the median";
+
+    setHTML("riverBody",
+        '<div class="gauge"><span class="big">' + commas(cfs)
+        + ' <span style="font-size:14px;opacity:.6">cfs</span></span>'
+        + '<span class="vs">' + vs + " for "
+        + today.toLocaleDateString([], { month: "short", day: "numeric" })
+        + " (" + stats.yrs + " yrs of record)</span></div>"
+      + '<div class="note">Typical range today is ' + commas(stats.p25)
+        + "\u2013" + commas(stats.p75) + " cfs. Recommended pace: "
+        + '<b style="color:var(--tide)">' + RECOMMENDED.label + "</b>, "
+        + RECOMMENDED.lo + "\u2013" + RECOMMENDED.hi + " hrs. "
+        + '<a href="' + USGS_PAGE + '" target="_blank" rel="noopener">Live gauge \u2197</a></div>');
+
     renderChips();
-  }).catch(function(err){
-    RECOMMENDED=null;
-    document.getElementById("riverBody").innerHTML=
-      '<p class="err">Couldn\'t reach the USGS gauge ('+err.message+'). Pick a pace by eye.</p>'+
-      '<div class="note">Check flow at <a href="'+USGS_PAGE+'" target="_blank" rel="noopener">USGS Soldotna</a>.</div>';
+  }).catch(function (err) {
+    RECOMMENDED = null;
+    setHTML("riverBody",
+        '<p class="err">Couldn\'t reach the USGS gauge (' + err.message
+        + "). Pick a pace by eye.</p>"
+      + '<div class="note">Check flow at <a href="' + USGS_PAGE
+        + '" target="_blank" rel="noopener">USGS Soldotna</a>.</div>');
     renderChips();
   });
 }
 
 function renderChips(){
-  var html=PRESETS.map(function(p){
-    var on=(S.lagLo===p.lo&&S.lagHi===p.hi);
-    var rec=RECOMMENDED&&RECOMMENDED.key===p.key;
-    return '<button class="lagchip'+(on?" on":(rec?" rec":""))+'" data-k="'+p.key+'">'+
-      p.label+(rec&&!on?" \u2605":"")+'<small>'+p.lo+'\u2013'+p.hi+' hrs \u00b7 '+p.hint+'</small></button>';
+  var html = PRESETS.map(function (p) {
+    var active = (S.lagLo === p.lo && S.lagHi === p.hi);
+    var recommended = RECOMMENDED && RECOMMENDED.key === p.key;
+    var cls = active ? " on" : (recommended ? " rec" : "");
+    return '<button class="lagchip' + cls + '" data-k="' + p.key + '">'
+      + p.label + (recommended && !active ? " \u2605" : "")
+      + "<small>" + p.lo + "\u2013" + p.hi + " hrs \u00b7 " + p.hint + "</small></button>";
   }).join("");
-  var box=document.getElementById("lagChips");
-  box.innerHTML=html;
-  Array.prototype.forEach.call(box.querySelectorAll(".lagchip"),function(b){
-    b.onclick=function(){
-      var p=PRESETS.filter(function(x){return x.key===b.dataset.k;})[0];
-      S.lagLo=p.lo; S.lagHi=p.hi;
-      saveJSON("kenai_settings_v1",S);
-      fillSettings(); renderChips(); renderHero(); renderWhy();
+
+  var box = byId("lagChips");
+  box.innerHTML = html;
+
+  Array.prototype.forEach.call(box.querySelectorAll(".lagchip"), function (btn) {
+    btn.onclick = function () {
+      var preset = PRESETS.filter(function (p) { return p.key === btn.dataset.k; })[0];
+      S.lagLo = preset.lo;
+      S.lagHi = preset.hi;
+      saveJSON("kenai_settings_v1", S);
+      fillSettings();
+      renderChips();
+      renderHero();
+      renderWhy();
+      renderCalib();
     };
   });
-  document.getElementById("lagNow").innerHTML=
-    "In use: <b>"+S.lagLo+"\u2013"+S.lagHi+" hrs</b> to your spot ("+
-    (SPOT_RM/S.lagHi).toFixed(2)+"\u2013"+(SPOT_RM/S.lagLo).toFixed(2)+" mph over ground). "+
-    "Fine-tune in Settings once you've calibrated against real fishing.";
+
+  setHTML("lagNow",
+      "In use: <b>" + S.lagLo + "\u2013" + S.lagHi + " hrs</b> to your spot ("
+    + (SPOT_RM / S.lagHi).toFixed(2) + "\u2013" + (SPOT_RM / S.lagLo).toFixed(2)
+    + " mph over ground). Fine-tune in Settings once you've calibrated against "
+    + "real fishing.");
 }
 
-document.getElementById("useHT").onclick=function(){
-  var v=document.getElementById("manualHT").value; if(!v)return;
-  var d=new Date(v);
-  HIGH_TIDES=[{t:d,v:null}];
-  document.getElementById("tideErr").textContent=
-    "Using high tide "+d.toLocaleString([], {weekday:"short",month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})+
-    ". Pick another and tap again to change it.";
+
+/* ===========================================================================
+   12. CALIBRATION
+   ---------------------------------------------------------------------------
+   The one lever that makes the hourly forecast mean anything. High tides arrive
+   12.42 hrs apart, so a lag window wider than that guarantees consecutive waves
+   overlap and the forecast flattens. At the 31-47 default (16 hrs wide) the best
+   hour beats the worst by 1.10x, which is no basis for a decision. At 8 hrs wide
+   it is 3.6x. Only real sessions can close that gap.
+   =========================================================================== */
+
+var CAL_MIN_MPH = 0.7;                   // believable river speeds over ground
+var CAL_MAX_MPH = 2.2;
+var CAL_PICK = null;                     // candidate chosen in the form, if any
+
+function calLoad() {
+  return loadJSON("kenai_calib_v1", []) || [];
+}
+
+function calSave(list) {
+  saveJSON("kenai_calib_v1", list);
+}
+
+// Every big tide that could plausibly have driven a session at time `ms`.
+// Big tides only: they run ~24.8 hrs apart instead of 12.4, so the candidates
+// are far enough apart to tell apart at all. Ordinary tides would give a dozen
+// answers within a believable speed range.
+function calCandidates(ms) {
+  var found = [];
+
+  HIGH_TIDES.forEach(function (tide) {
+    if (tide.v == null || tide.v < BIG_TIDE_FT) return;
+    var lag = (ms - +tide.t) / MS_H;
+    if (lag <= 0) return;
+    var mph = SPOT_RM / lag;
+    if (mph < CAL_MIN_MPH || mph > CAL_MAX_MPH) return;
+    found.push({ t: +tide.t, v: tide.v, lag: lag, mph: mph });
+  });
+
+  return found.sort(function (a, b) { return a.lag - b.lag; });
+}
+
+// Peak-to-trough contrast for a given window, so the payoff is visible rather
+// than asserted. Same maths the forecast uses.
+function calContrast(lagLo, lagHi) {
+  if (!HIGH_TIDES.length) return null;
+
+  var centre = (lagLo + lagHi) / 2 * MS_H;
+  var sigma = Math.max(1.5, (lagHi - lagLo) / 2.5);
+  var base = +HIGH_TIDES[Math.floor(HIGH_TIDES.length / 2)].t;
+
+  function intensity(ms) {
+    return HIGH_TIDES.reduce(function (total, tide) {
+      var weight = (tide.v == null) ? 2.5 : Math.max(0.2, tide.v - 12);
+      var hoursOff = (ms - (+tide.t + centre)) / MS_H;
+      return total + weight * Math.exp(-hoursOff * hoursOff / (2 * sigma * sigma));
+    }, 0);
+  }
+
+  var hi = 0;
+  var lo = Infinity;
+  for (var t = base; t <= base + 24 * MS_H; t += 9e5) {
+    var v = intensity(t);
+    if (v > hi) hi = v;
+    if (v < lo) lo = v;
+  }
+  return (lo > 0) ? hi / lo : null;
+}
+
+// Suggested window from the logged sessions: fastest and slowest observed,
+// rounded outward by half an hour so the range is not tighter than the data.
+function calSuggest() {
+  var rows = calLoad().filter(function (r) { return r.lag > 0; });
+  if (rows.length < 3) return null;
+
+  var lags = rows.map(function (r) { return r.lag; });
+  var lo = Math.floor(Math.min.apply(null, lags) * 2) / 2;
+  var hi = Math.ceil(Math.max.apply(null, lags) * 2) / 2;
+
+  // Three trips cannot prove sub-hour precision, so never suggest a window
+  // narrower than the data supports.
+  if (hi - lo < 2) { lo -= 1; hi += 1; }
+
+  return {
+    lo: lo, hi: hi, n: rows.length,
+    now: calContrast(S.lagLo, S.lagHi),
+    then: calContrast(lo, hi)
+  };
+}
+
+function calIntroHTML() {
+  var width = S.lagHi - S.lagLo;
+  var tooWide = width > 12.42;
+  var html = '<p class="note">High tides arrive <b>12.4 hrs</b> apart. While your '
+    + "window is wider than that, one tide\u2019s fish are still arriving as the next "
+    + "tide\u2019s begin, so the forecast flattens and no hour stands out. Yours is <b>"
+    + width + " hrs</b> wide"
+    + (tooWide ? ", which is why you see no peaks." : ".") + "</p>";
+
+  var contrast = calContrast(S.lagLo, S.lagHi);
+  if (contrast) {
+    html += '<p class="note">Right now the best hour beats the worst by <b>'
+      + contrast.toFixed(2) + "x</b>. Under 12.4 hrs wide that climbs sharply.</p>";
+  }
+  return html;
+}
+
+function calFormHTML() {
+  return '<hr class="soft"><p class="label">Log a session</p>'
+    + '<p class="note">Use the <b>middle</b> of the session, not the moment a slug hit. '
+    + "Slugs are fish stacking below you and releasing in groups; they are not the tide.</p>"
+    + '<div class="field"><label>Middle of the session</label>'
+      + '<input type="datetime-local" id="calWhen"></div>'
+    + '<div id="calCands"><p class="note">Pick a time and the tides that could have '
+      + "driven it will appear here.</p></div>"
+    + '<div class="field"><label>River flow that day (cfs, optional)</label>'
+      + '<input type="number" id="calCfs" inputmode="numeric"></div>'
+    + '<button class="primary" id="calAdd">Add session</button>';
+}
+
+function calSessionsHTML(rows) {
+  if (!rows.length) return "";
+
+  return '<hr class="soft"><p class="label">Logged sessions (' + rows.length + ")</p>"
+    + rows.map(function (r, i) {
+      var when = new Date(r.when);
+      var tide = new Date(r.tideT);
+      return '<div class="leg" style="border-top:1px solid var(--line);padding-top:8px">'
+        + '<span class="t num">'
+          + when.toLocaleDateString([], { month: "short", day: "numeric" })
+          + " " + clock(when) + "</span>"
+        + '<span class="str hi">' + r.lag.toFixed(1) + " hrs</span>"
+        + '<span class="n">' + r.mph.toFixed(2) + " mph \u00b7 off the "
+          + clock(tide) + " " + r.tideV.toFixed(1) + " ft tide"
+          + (r.cfs ? " \u00b7 " + commas(r.cfs) + " cfs" : "") + "</span>"
+        + '<button class="ghost" data-del="' + i + '" '
+          + 'style="padding:2px 8px;font-size:12px">remove</button>'
+        + "</div>";
+    }).join("");
+}
+
+function calSuggestionHTML(suggestion, sessionCount) {
+  if (!suggestion) {
+    var needed = Math.max(0, 3 - sessionCount);
+    return '<hr class="soft"><p class="note"><b>' + needed + " more session"
+      + (needed === 1 ? "" : "s") + "</b> and a window will be suggested. "
+      + "Log them off big tides only (16 ft or more); ordinary tides come too close "
+      + "together to tell apart.</p>";
+  }
+
+  var width = suggestion.hi - suggestion.lo;
+  var payoff = suggestion.then
+    ? ". Best hour would beat worst by <b>" + suggestion.then.toFixed(2) + "x</b>"
+      + (suggestion.now ? ", up from " + suggestion.now.toFixed(2) + "x" : "") + "."
+    : ".";
+  var verdict = width > 12.42
+    ? " Still wider than 12.4 hrs, so waves keep overlapping. More sessions "
+      + "may tighten it, or the spread may be real."
+    : " Under 12.4 hrs, so waves separate and real peaks appear.";
+
+  return '<hr class="soft"><p class="label">Suggested from your ' + suggestion.n
+      + " sessions</p>"
+    + '<div class="bignum num">' + suggestion.lo + "\u2013" + suggestion.hi + " hrs</div>"
+    + '<p class="note">' + (SPOT_RM / suggestion.hi).toFixed(2) + "\u2013"
+      + (SPOT_RM / suggestion.lo).toFixed(2) + " mph over ground"
+      + payoff + verdict + "</p>"
+    + '<button class="primary" id="calApply">Use ' + suggestion.lo + "\u2013"
+      + suggestion.hi + " hrs</button>";
+}
+
+function renderCalib() {
+  var el = byId("calibBody");
+  if (!el) return;
+
+  var rows = calLoad();
+  var suggestion = calSuggest();
+
+  el.innerHTML = calIntroHTML()
+    + calFormHTML()
+    + calSessionsHTML(rows)
+    + calSuggestionHTML(suggestion, rows.length);
+
+  var whenInput = byId("calWhen");
+  if (whenInput) {
+    whenInput.onchange = function () { CAL_PICK = null; renderCalCands(); };
+  }
+
+  var addBtn = byId("calAdd");
+  if (addBtn) addBtn.onclick = calAddSession;
+
+  var applyBtn = byId("calApply");
+  if (applyBtn) {
+    applyBtn.onclick = function () {
+      S.lagLo = suggestion.lo;
+      S.lagHi = suggestion.hi;
+      saveJSON("kenai_settings_v1", S);
+      fillSettings();
+      renderChips();
+      renderWhy();
+      renderHero();
+      renderCalib();
+    };
+  }
+
+  Array.prototype.forEach.call(el.querySelectorAll("[data-del]"), function (btn) {
+    btn.onclick = function () {
+      var list = calLoad();
+      list.splice(+btn.dataset.del, 1);
+      calSave(list);
+      renderCalib();
+    };
+  });
+}
+
+function renderCalCands() {
+  var box = byId("calCands");
+  if (!box) return;
+
+  var value = byId("calWhen").value;
+  if (!value) {
+    box.innerHTML = '<p class="note">Pick a time first.</p>';
+    return;
+  }
+
+  var candidates = calCandidates(+new Date(value));
+  if (!candidates.length) {
+    box.innerHTML = '<p class="err">No big tide in range for that time. Either the '
+      + "session is outside the tide data the app has loaded, or no 16 ft tide falls "
+      + Math.round(SPOT_RM / CAL_MAX_MPH) + "\u2013" + Math.round(SPOT_RM / CAL_MIN_MPH)
+      + " hrs before it.</p>";
+    return;
+  }
+
+  // One session usually cannot settle which tide it was: 31 hrs gives 1.52 mph
+  // and the tide before it gives 1.08 mph, both believable. Show them all, let
+  // the angler judge, and let agreement across trips do the real work.
+  box.innerHTML = '<p class="label" style="margin-top:10px">Which tide pushed them?</p>'
+    + '<p class="note" style="margin-top:-4px">More than one can look believable. '
+      + "Pick the one that matches the water you saw; agreement across trips is what "
+      + "settles it.</p>"
+    + '<div class="chips">'
+    + candidates.map(function (c, i) {
+        return '<button class="lagchip' + (CAL_PICK === i ? " on" : "")
+          + '" data-c="' + i + '">'
+          + clock(new Date(c.t)) + " \u00b7 " + c.v.toFixed(1) + " ft"
+          + "<small>" + c.lag.toFixed(1) + " hrs \u00b7 " + c.mph.toFixed(2)
+          + " mph</small></button>";
+      }).join("")
+    + "</div>";
+
+  Array.prototype.forEach.call(box.querySelectorAll("[data-c]"), function (btn) {
+    btn.onclick = function () { CAL_PICK = +btn.dataset.c; renderCalCands(); };
+  });
+}
+
+function calAddSession() {
+  var value = byId("calWhen").value;
+  if (!value) return;
+
+  var candidates = calCandidates(+new Date(value));
+  if (!candidates.length || CAL_PICK == null || !candidates[CAL_PICK]) return;
+
+  var picked = candidates[CAL_PICK];
+  var cfs = parseFloat(byId("calCfs").value);
+
+  var list = calLoad();
+  list.push({
+    when: +new Date(value),
+    tideT: picked.t,
+    tideV: picked.v,
+    lag: picked.lag,
+    mph: picked.mph,
+    cfs: isNaN(cfs) ? null : cfs
+  });
+  list.sort(function (a, b) { return a.when - b.when; });
+
+  calSave(list);
+  CAL_PICK = null;
+  renderCalib();
+}
+
+
+/* ===========================================================================
+   13. SETTINGS PANEL
+   =========================================================================== */
+
+function renderWhy() {
+  var toSonarLo = Math.round(S.lagLo * SONAR_FRAC);
+  var toSonarHi = Math.round(S.lagHi * SONAR_FRAC);
+  var restLo = Math.round(S.lagLo * (1 - SONAR_FRAC));
+  var restHi = Math.round(S.lagHi * (1 - SONAR_FRAC));
+
+  setHTML("whyBody",
+      "<p><b>1. The ocean push.</b> Sockeye enter the Kenai in waves on the high "
+      + "tide down at Cook Inlet.</p>"
+    + "<p><b>2. The counter.</b> ~" + toSonarLo + "\u2013" + toSonarHi
+      + " hrs later they pass the RM 19 sonar. ADF&G reports one combined count "
+      + "there, so treat it as the size of the push, not which side of the river "
+      + "it is on.</p>"
+    + "<p><b>3. Your spot.</b> Another ~" + restLo + "\u2013" + restHi
+      + " hrs to cover the last " + (SPOT_RM - SONAR_RM) + " miles up to you.</p>"
+    + "<p><b>Rule of thumb:</b> ~" + S.lagLo + "\u2013" + S.lagHi
+      + " hrs from the mouth\u2019s high tide to your hook, i.e. about 1\u20131.5 mph "
+      + "over ground. High/fast water runs them slower and tighter to shore.</p>"
+    + '<p class="note">Windows are estimates. Run timing shifts year to year with '
+      + "tides, temps, and weather.</p>");
+}
+
+function setVal(id, value) {
+  var el = byId(id);
+  if (el) el.value = value;
+}
+
+function fillSettings() {
+  setVal("setStation", S.station);
+  setVal("setLagLo", S.lagLo);
+  setVal("setLagHi", S.lagHi);
+}
+
+byId("saveSettings").onclick = function () {
+  S.station = byId("setStation").value;
+  S.lagLo = parseFloat(byId("setLagLo").value) || DEFAULTS.lagLo;
+  S.lagHi = parseFloat(byId("setLagHi").value) || DEFAULTS.lagHi;
+  saveJSON("kenai_settings_v1", S);
+
+  renderSpot();
+  renderWhy();
+  renderChips();
+  renderCalib();
+  loadTides();
+  byId("settings").open = false;
+};
+
+byId("useHT").onclick = function () {
+  var value = byId("manualHT").value;
+  if (!value) return;
+
+  var date = new Date(value);
+  HIGH_TIDES = [{ t: date, v: null }];
+  setText("tideErr", "Using high tide "
+    + date.toLocaleString([], { weekday: "short", month: "short", day: "numeric",
+                                hour: "numeric", minute: "2-digit" })
+    + ". Pick another and tap again to change it.");
   renderHero();
 };
-document.getElementById("retryTide").onclick=loadTides;
 
-renderSpot(); renderWindowLabel(); renderWhy(); fillSettings(); renderChips();
-loadTides(); loadSonar(); loadRiver();
-var rzT;
-window.addEventListener("resize",function(){clearTimeout(rzT);rzT=setTimeout(renderBest,180);});
-setInterval(tick,1000);
-setInterval(function(){ if(HIGH_TIDES.length) renderHero(); },60000);
+byId("retryTide").onclick = loadTides;
+
+
+/* ===========================================================================
+   14. STARTUP
+   =========================================================================== */
+
+renderSpot();
+renderWindowLabel();
+renderWhy();
+fillSettings();
+renderChips();
+renderCalib();
+
+loadTides();
+loadSonar();
+loadRiver();
+
+// Redraw the chart when the window changes size, since bar count depends on it.
+var resizeTimer;
+window.addEventListener("resize", function () {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(renderBest, 180);
+});
+
+setInterval(tick, 1000);                                    // countdown, every second
+setInterval(function () {                                   // full redraw, every minute
+  if (HIGH_TIDES.length) renderHero();
+}, 60000);
 </script>
 </body>
 </html>
