@@ -481,7 +481,13 @@ function strengthLabel(ms){
 function fishScale(){
   if(!LAST_SONAR||LAST_SONAR.d==null||!(LAST_SONAR.d>0))return null;
   var cd=CURVE||curveData(); if(!cd.fine.length)return null;
-  var mean=cd.fine.reduce(function(a,p){return a+p.r;},0)/cd.fine.length;
+  // Average over the FORWARD window only. The curve carries 24 hrs of history
+  // for the chart, but those hours are not fishable and including them skews
+  // the "average hour" this scaling is built on: during a declining run the
+  // heavy past inflated the mean and deflated every future fish/hr by ~8%.
+  var fwd=cd.fine.filter(function(p){return !p.past;});
+  if(!fwd.length) fwd=cd.fine;
+  var mean=fwd.reduce(function(a,p){return a+p.r;},0)/fwd.length;
   if(!(mean>0))return null;
   return {perHrAt:function(r){return LAST_SONAR.d/24*(r/mean);},
           daily:LAST_SONAR.d, date:LAST_SONAR.o, live:LAST_SONAR.l};
