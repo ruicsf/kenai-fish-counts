@@ -904,28 +904,49 @@ function countOnDay(date, dayOffset) {
   return last.count;
 }
 
-// Is the number shown at time ms backed by a posted count, or is it the last
-// posted count held forward? Fish arriving at ms crossed the sonar earlier, so
-// this asks about the crossing day, not about ms itself.
+// Fish arriving at one moment did not all cross the sonar together. They
+// crossed over a spread of hours, because some travel faster than others:
+//   slowest fish arriving now crossed  lagHi * (1 - SONAR_FRAC) hrs ago
+//   fastest fish arriving now crossed  lagLo * (1 - SONAR_FRAC) hrs ago
+// The fastest one is the most recent crossing, so it is the one that decides
+// whether ADF&G has a count covering this hour yet.
+function fastestLegHrs() { return S.lagLo * (1 - SONAR_FRAC); }
+
+// Does every fish arriving at ms have a posted count behind it?
+//
+// This used to ask about the MIDDLE of the spread, which put the boundary
+// inside the zone where some arriving fish were already uncounted. Asking
+// about the most recent crossing is the honest test: if that day is not
+// posted, part of what is drawn has nothing behind it.
 function isHeldForward(ms) {
   if (!LAST_ROWS || !LAST_ROWS.length) return false;
-  var crossed = new Date(ms - sonarBackHrs() * MS_H);
-  var key = dateKey(crossed);
+  var newestCrossing = new Date(ms - fastestLegHrs() * MS_H);
+  var key = dateKey(newestCrossing);
   for (var i = LAST_ROWS.length - 1; i >= 0; i--) {
     if (LAST_ROWS[i].date === key) return false;
   }
   return Date.parse(key) > Date.parse(LAST_ROWS[LAST_ROWS.length - 1].date);
 }
 
-// The last moment still backed by a posted count: the end of the last posted
-// day, plus the sonar-to-spot leg. Must use the SAME leg as isHeldForward, or
-// the boundary printed in the footnote is not the boundary the hatching draws.
+// The last moment fully backed by posted counts. Same leg as isHeldForward, or
+// the time printed in the note would not match where the stripes start.
 function postedThrough() {
   if (!LAST_ROWS || !LAST_ROWS.length) return null;
   var last = LAST_ROWS[LAST_ROWS.length - 1];
   var endOfDay = Date.parse(last.date + "T23:59:59");
   if (isNaN(endOfDay)) return null;
-  return endOfDay + sonarBackHrs() * MS_H;
+  return endOfDay + fastestLegHrs() * MS_H;
+}
+
+// When the last fish from the last posted count should reach the spot. This is
+// a different question from postedThrough and gets confused with it: the
+// stripes start when the app runs OUT OF COUNTS, not when fish stop coming.
+function lastPostedFishArriveBy() {
+  if (!LAST_ROWS || !LAST_ROWS.length) return null;
+  var last = LAST_ROWS[LAST_ROWS.length - 1];
+  var endOfDay = Date.parse(last.date + "T23:59:59");
+  if (isNaN(endOfDay)) return null;
+  return endOfDay + S.lagHi * (1 - SONAR_FRAC) * MS_H;
 }
 
 // The daily count driving arrivals at time ms. Scaling the whole 48 hr forecast
@@ -1347,13 +1368,17 @@ function buildChartFootnote(scale) {
   if (through) {
     var last = LAST_ROWS[LAST_ROWS.length - 1];
     var lastDate = new Date(last.date + "T12:00:00");
+    var arriveBy = lastPostedFishArriveBy();
     heldText = "ADF&G has counted up to <b>"
       + (lastDate.getMonth() + 1) + "/" + lastDate.getDate()
-      + "</b>. After <b>" + dayName(new Date(through)) + " "
+      + "</b>. Fish from that day keep arriving until about <b>"
+      + dayName(new Date(arriveBy)) + " " + clock(new Date(arriveBy))
+      + "</b>, but from <b>" + dayName(new Date(through)) + " "
       + clock(new Date(through))
-      + "</b> there is no count to work from, so the app just keeps using that "
-      + "last number. Those are the striped bars. The real count could go up or "
-      + "down instead. ";
+      + "</b> onward some of the fish showing up will have crossed the sonar on "
+      + "a day ADF&G has not published yet. For those hours the app reuses the "
+      + "last count it has. That is what the striped bars mean: not that fish "
+      + "stop, just that the number behind them is a stand-in. ";
   }
 
   return '<div class="note" style="margin-top:10px"><b>These are rough numbers.</b> '
@@ -1409,7 +1434,7 @@ function renderBest() {
       + '<span><i class="sw fut"></i>next ' + FWD_HRS + " hrs</span>"
       + '<span><i class="sw nowline"></i>now</span>'
       + '<span><i class="sw mid"></i>midnight</span>'
-      + (anyHeld ? '<span><i class="sw held"></i>no count yet</span>' : "")
+      + (anyHeld ? '<span><i class="sw held"></i>count not published yet</span>' : "")
     + "</div>"
     + (flat
         ? '<div class="note" style="margin-top:10px">Top hours below are within '
